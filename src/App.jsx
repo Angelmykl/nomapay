@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 
 // ─── Arc Testnet Config ─────────────────────────────────────────────────────
@@ -13,6 +13,7 @@ const ARC_TESTNET = {
 const NOMAPAY_CONTRACT = "0x7f88a72232860A77845Fa643B2941d1acC582bB7";
 const USDC_ADDRESS     = "0x3600000000000000000000000000000000000000";
 const EURC_ADDRESS     = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
+const RPC              = "https://rpc.testnet.arc.network";
 
 const short = (addr) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : "";
 const timeAgo = (ts) => {
@@ -22,6 +23,12 @@ const timeAgo = (ts) => {
   if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
   return `${Math.floor(diff/86400000)}d ago`;
 };
+
+// ── localStorage helpers ───────────────────────────────────────────────────
+const TX_KEY  = (tag) => `nomapay_txs_v2_${tag}`;
+const saveTxs = (tag, txs) => { try { localStorage.setItem(TX_KEY(tag), JSON.stringify(txs)); } catch(e) {} };
+const loadTxs = (tag) => { try { return JSON.parse(localStorage.getItem(TX_KEY(tag)) || "[]"); } catch(e) { return []; } };
+const wipeTxs = (tag) => { try { localStorage.removeItem(TX_KEY(tag)); } catch(e) {} };
 
 export default function NomaPay() {
   const [account, setAccount]   = useState(null);
@@ -49,91 +56,131 @@ export default function NomaPay() {
   const [txHistory, setTxHistory]     = useState([]);
   const [showNotif, setShowNotif]     = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const notifRef = useRef(null);
+
+  const notifRef    = useRef(null);
+  const tagRef      = useRef("");
+  const accountRef  = useRef("");
+  const intervalRef = useRef(null);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
   };
 
-  const addTx = (tx) => {
-    setTxHistory(prev => [{ ...tx, id: `local_${Date.now()}`, time: Date.now(), unread: true }, ...prev].slice(0, 50));
-    setUnreadCount(c => c + 1);
+  // Close notif on outside click
+  useEffect(() => {
+    const h = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // ── Fetch balances ─────────────────────────────────────────────────────────
+  const fetchBalances = async (addr) => {
+    if (!addr) return;
+    try {
+      const p   = new ethers.JsonRpcProvider(RPC);
+      const abi = ["function balanceOf(address) view returns (uint256)"];
+      const [u, e] = await Promise.all([
+        new ethers.Contract(USDC_ADDRESS, abi, p).balanceOf(addr),
+        new ethers.Contract(EURC_ADDRESS, abi, p).balanceOf(addr),
+      ]);
+      setUsdcBal((Number(u) / 1e6).toFixed(2));
+      setEurcBal((Number(e) / 1e6).toFixed(2));
+    } catch(err) { console.error("Balance error:", err); }
   };
 
-  // Close notif when clicking outside
-  useEffect(() => {
-    const handler = (e) => {
-      if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  // ── FIX 3: Auto-refresh balances + tx history every 30s ───────────────────
-  useEffect(() => {
-    if (!account || step !== "app") return;
-    const userTag = localStorage.getItem(`nomapay_user_${account}`) || username;
-    fetchBalances(account);
-    if (userTag) fetchTxHistory(userTag);
-    const interval = setInterval(() => {
-      fetchBalances(account);
-      if (userTag) fetchTxHistory(userTag);
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [account, step, username]);
-
-  // ── FIX 3: Fetch Balances ──────────────────────────────────────────────────
-  const fetchBalances = useCallback(async (address) => {
-    if (!address) return;
-    try {
-      const provider = new ethers.JsonRpcProvider("https://rpc.testnet.arc.network");
-      const abi = ["function balanceOf(address) view returns (uint256)"];
-      const [uBal, eBal] = await Promise.all([
-        new ethers.Contract(USDC_ADDRESS, abi, provider).balanceOf(address),
-        new ethers.Contract(EURC_ADDRESS, abi, provider).balanceOf(address),
-      ]);
-      setUsdcBal((Number(uBal) / 1e6).toFixed(2));
-      setEurcBal((Number(eBal) / 1e6).toFixed(2));
-    } catch (err) { console.error("Balance fetch failed:", err); }
-  }, []);
-
-  // ── FIX 1: Fetch TX History (shows received + sent) ───────────────────────
-  const fetchTxHistory = async (tag) => {
+  // ── Fetch on-chain tx history ──────────────────────────────────────────────
+  const fetchOnChainTxs = async (tag) => {
     if (!tag) return;
     try {
-      const provider = new ethers.JsonRpcProvider("https://rpc.testnet.arc.network");
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, [
-        "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)",
-      ], provider);
+      const provider = new ethers.JsonRpcProvider(RPC);
+
+      // Use raw event signature to avoid indexed string filter issues
+      const iface = new ethers.Interface([
+        "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
+      ]);
+      const topic = iface.getEvent("TokenSent").topicHash;
 
       const currentBlock = await provider.getBlockNumber();
-      const fromBlock = Math.max(0, currentBlock - 10000);
-      const allEvents = await contract.queryFilter("TokenSent", fromBlock);
-      const txs = [];
+      const fromBlock    = Math.max(0, currentBlock - 10000);
 
-      for (const e of allEvents.reverse().slice(0, 50)) {
-        const from = e.args.fromUsername;
-        const to   = e.args.toUsername;
-        if (from !== tag && to !== tag) continue;
+      // Fetch ALL TokenSent logs from contract
+      const logs = await provider.getLogs({
+        address: NOMAPAY_CONTRACT,
+        topics: [topic],
+        fromBlock,
+        toBlock: "latest",
+      });
 
-        const block = await provider.getBlock(e.blockNumber);
-        const tokenSym = e.args.token.toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+      const existing   = loadTxs(tag);
+      const existingIds = new Set(existing.map(t => t.id));
+      const newEntries = [];
 
-        txs.push({
-          id: e.transactionHash,
-          type: from === tag ? "sent" : "received",
-          from, to,
-          amount: (Number(e.args.amount) / 1e6).toFixed(2),
-          fee:    (Number(e.args.fee)    / 1e6).toFixed(4),
-          token: tokenSym,
-          time: block ? block.timestamp * 1000 : Date.now(),
-          hash: e.transactionHash,
-          unread: false,
-        });
+      for (const log of logs.reverse()) {
+        if (existingIds.has(log.transactionHash)) continue;
+        try {
+          const parsed = iface.parseLog(log);
+          const from   = parsed.args.fromUsername;
+          const to     = parsed.args.toUsername;
+          if (from !== tag && to !== tag) continue;
+
+          const block    = await provider.getBlock(log.blockNumber);
+          const tokenSym = parsed.args.token.toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+
+          newEntries.push({
+            id:     log.transactionHash,
+            type:   from === tag ? "sent" : "received",
+            from,   to,
+            amount: (Number(parsed.args.amount) / 1e6).toFixed(2),
+            fee:    (Number(parsed.args.fee)    / 1e6).toFixed(4),
+            token:  tokenSym,
+            time:   block ? block.timestamp * 1000 : Date.now(),
+            hash:   log.transactionHash,
+            unread: true,
+          });
+        } catch(e) { continue; }
       }
-      setTxHistory(txs);
-    } catch (err) { console.error("Tx history fetch failed:", err); }
+
+      if (newEntries.length > 0) {
+        const merged = [...newEntries, ...existing].slice(0, 50);
+        setTxHistory(merged);
+        saveTxs(tag, merged);
+        setUnreadCount(c => c + newEntries.length);
+      } else if (existing.length > 0 && txHistory.length === 0) {
+        // Load from storage when reconnecting
+        setTxHistory(existing);
+      }
+    } catch(err) { console.error("Tx fetch error:", err); }
+  };
+
+  // ── Start polling after login ──────────────────────────────────────────────
+  const startPolling = (addr, tag) => {
+    accountRef.current = addr;
+    tagRef.current     = tag;
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    fetchBalances(addr);
+    fetchOnChainTxs(tag);
+    intervalRef.current = setInterval(() => {
+      fetchBalances(accountRef.current);
+      fetchOnChainTxs(tagRef.current);
+    }, 30000);
+  };
+
+  const stopPolling = () => {
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+  };
+
+  // ── Enter app ─────────────────────────────────────────────────────────────
+  const enterApp = (addr, tag) => {
+    setAccount(addr);
+    setUsername(tag);
+    tagRef.current    = tag;
+    accountRef.current = addr;
+    // Load saved history immediately so panel shows instantly
+    const saved = loadTxs(tag);
+    if (saved.length > 0) setTxHistory(saved);
+    setStep("app");
+    startPolling(addr, tag);
   };
 
   // ── Connect Wallet ─────────────────────────────────────────────────────────
@@ -142,8 +189,8 @@ export default function NomaPay() {
     try {
       try {
         await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: ARC_TESTNET.chainId }] });
-      } catch (switchErr) {
-        if (switchErr.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [ARC_TESTNET] });
+      } catch (se) {
+        if (se.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [ARC_TESTNET] });
       }
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
       setAccount(accounts[0]);
@@ -153,7 +200,7 @@ export default function NomaPay() {
     } catch (err) { showToast("Connection failed: " + err.message, "error"); }
   };
 
-  // ── Register Username ──────────────────────────────────────────────────────
+  // ── Register / detect existing username ───────────────────────────────────
   const registerUsername = async () => {
     if (!regInput.trim()) return;
     if (!/^[a-z0-9_]{3,20}$/.test(regInput)) {
@@ -161,98 +208,102 @@ export default function NomaPay() {
       return;
     }
     setRegLoading(true);
-    setRegStatus({ type: "loading", msg: "Checking registration…" });
+    setRegStatus({ type: "loading", msg: "Checking on-chain…" });
 
+    // Check if already registered
     try {
-      const provider = new ethers.JsonRpcProvider("https://rpc.testnet.arc.network");
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, ["function getUsername(address) view returns (string)"], provider);
-      const existing = await contract.getUsername(account);
+      const p   = new ethers.JsonRpcProvider(RPC);
+      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function getUsername(address) view returns (string)"], p);
+      const existing = await c.getUsername(account);
       if (existing && existing.length > 0) {
         localStorage.setItem(`nomapay_user_${account}`, existing);
-        setUsername(existing);
-        setStep("app");
-        fetchTxHistory(existing);
         showToast(`Welcome back ${existing}.noma! 🎉`);
+        enterApp(account, existing);
         setRegLoading(false);
         return;
       }
     } catch(e) {}
 
+    // New registration
     setRegStatus({ type: "loading", msg: "Step 1/2 — Approve USDC fee…" });
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer   = await provider.getSigner();
-      const usdc = new ethers.Contract(USDC_ADDRESS, ["function approve(address,uint256) returns(bool)"], signer);
+      const p      = new ethers.BrowserProvider(window.ethereum);
+      const signer = await p.getSigner();
+      const usdc   = new ethers.Contract(USDC_ADDRESS, ["function approve(address,uint256) returns(bool)"], signer);
       await (await usdc.approve(NOMAPAY_CONTRACT, ethers.parseUnits("0.5", 6))).wait();
       setRegStatus({ type: "loading", msg: "Step 2/2 — Registering .noma tag…" });
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, ["function registerUsername(string)"], signer);
-      const regTx = await contract.registerUsername(regInput);
-      setRegStatus({ type: "loading", msg: "Confirming on-chain…" });
-      await regTx.wait();
+      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function registerUsername(string)"], signer);
+      const tx  = await c.registerUsername(regInput);
+      setRegStatus({ type: "loading", msg: "Confirming…" });
+      await tx.wait();
       localStorage.setItem(`nomapay_user_${account}`, regInput);
-      setUsername(regInput);
-      setStep("app");
-      fetchTxHistory(regInput);
-      addTx({ type: "registered", tag: regInput, hash: regTx.hash });
+      // Save registration entry
+      const regEntry = [{ id:`reg_${Date.now()}`, type:"registered", tag:regInput, hash:tx.hash, time:Date.now(), unread:false }];
+      saveTxs(regInput, regEntry);
       showToast(`${regInput}.noma registered! 🎉`);
+      enterApp(account, regInput);
     } catch (err) { setRegStatus({ type: "error", msg: err.message }); }
     setRegLoading(false);
   };
 
-  // ── Send Tokens ────────────────────────────────────────────────────────────
+  // ── Add a tx locally + save ────────────────────────────────────────────────
+  const addLocalTx = (tx) => {
+    setTxHistory(prev => {
+      const updated = [{ ...tx, time: Date.now(), unread: false }, ...prev].slice(0, 50);
+      saveTxs(tagRef.current, updated);
+      return updated;
+    });
+    setUnreadCount(c => c + 1);
+  };
+
+  // ── Send ───────────────────────────────────────────────────────────────────
   const sendTokens = async () => {
-    if (!sendTo || !sendAmount || parseFloat(sendAmount) <= 0) { showToast("Enter a recipient and amount", "error"); return; }
+    if (!sendTo || !sendAmount || parseFloat(sendAmount) <= 0) { showToast("Enter recipient and amount", "error"); return; }
     setSendStatus("pending");
     try {
-      const provider  = new ethers.BrowserProvider(window.ethereum);
-      const signer    = await provider.getSigner();
-      const tokenAddr = sendToken === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
-      const amount    = ethers.parseUnits(sendAmount, 6);
-      const token = new ethers.Contract(tokenAddr, ["function approve(address,uint256) returns(bool)"], signer);
-      await (await token.approve(NOMAPAY_CONTRACT, amount)).wait();
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, ["function sendToUsername(string,address,uint256)"], signer);
-      const tx = await contract.sendToUsername(sendTo, tokenAddr, amount);
+      const p      = new ethers.BrowserProvider(window.ethereum);
+      const signer = await p.getSigner();
+      const tAddr  = sendToken === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
+      const amt    = ethers.parseUnits(sendAmount, 6);
+      await (await new ethers.Contract(tAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function sendToUsername(string,address,uint256)"], signer).sendToUsername(sendTo, tAddr, amt);
       await tx.wait();
-      const fee = (parseFloat(sendAmount) * 0.005).toFixed(4);
-      const net = (parseFloat(sendAmount) - parseFloat(fee)).toFixed(4);
-      addTx({ type: "sent", from: username, to: sendTo, amount: net, fee, token: sendToken, hash: tx.hash });
+      const fee = (parseFloat(sendAmount)*0.005).toFixed(4);
+      const net = (parseFloat(sendAmount)-parseFloat(fee)).toFixed(4);
+      addLocalTx({ id:tx.hash, type:"sent", from:username, to:sendTo, amount:net, fee, token:sendToken, hash:tx.hash });
       showToast(`Sent ${net} ${sendToken} to ${sendTo}.noma!`);
-      setSendAmount(""); setSendTo("");
-      setSendStatus("done");
+      setSendAmount(""); setSendTo(""); setSendStatus("done");
       fetchBalances(account);
       setTimeout(() => setSendStatus(null), 2000);
-    } catch (err) { showToast("Send failed: " + err.message, "error"); setSendStatus(null); }
+    } catch(err) { showToast("Send failed: "+err.message,"error"); setSendStatus(null); }
   };
 
-  // ── Swap Tokens ────────────────────────────────────────────────────────────
+  // ── Swap ───────────────────────────────────────────────────────────────────
   const swapTokens = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter an amount to swap", "error"); return; }
+    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap","error"); return; }
     setSwapStatus("pending");
     try {
-      const provider  = new ethers.BrowserProvider(window.ethereum);
-      const signer    = await provider.getSigner();
-      const fromAddr  = swapFrom === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
-      const amount    = ethers.parseUnits(swapAmount, 6);
-      const token = new ethers.Contract(fromAddr, ["function approve(address,uint256) returns(bool)"], signer);
-      await (await token.approve(NOMAPAY_CONTRACT, amount)).wait();
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, ["function swap(address,uint256)"], signer);
-      const tx = await contract.swap(fromAddr, amount);
+      const p      = new ethers.BrowserProvider(window.ethereum);
+      const signer = await p.getSigner();
+      const fAddr  = swapFrom === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
+      const amt    = ethers.parseUnits(swapAmount, 6);
+      await (await new ethers.Contract(fAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function swap(address,uint256)"], signer).swap(fAddr, amt);
       await tx.wait();
-      const toToken = swapFrom === "USDC" ? "EURC" : "USDC";
-      const net = (parseFloat(swapAmount) * 0.998).toFixed(4);
-      addTx({ type: "swap", from: swapFrom, to: toToken, amount: swapAmount, net, token: swapFrom, hash: tx.hash });
+      const toToken = swapFrom==="USDC"?"EURC":"USDC";
+      const net     = (parseFloat(swapAmount)*0.998).toFixed(4);
+      addLocalTx({ id:tx.hash, type:"swap", from:swapFrom, to:toToken, amount:swapAmount, net, token:swapFrom, hash:tx.hash });
       showToast(`Swapped ${swapAmount} ${swapFrom} → ${net} ${toToken}`);
-      setSwapAmount("");
-      setSwapStatus("done");
+      setSwapAmount(""); setSwapStatus("done");
       fetchBalances(account);
       setTimeout(() => setSwapStatus(null), 2000);
-    } catch (err) { showToast("Swap failed: " + err.message, "error"); setSwapStatus(null); }
+    } catch(err) { showToast("Swap failed: "+err.message,"error"); setSwapStatus(null); }
   };
 
-  const swapTo         = swapFrom === "USDC" ? "EURC" : "USDC";
-  const sendFeePreview = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount) * 0.005).toFixed(4) : null;
-  const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount) * 0.998).toFixed(4) : null;
-  const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount) * 0.002).toFixed(4) : null;
+  const swapTo         = swapFrom==="USDC"?"EURC":"USDC";
+  const sendFeePreview = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount)*0.005).toFixed(4) : null;
+  const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.998).toFixed(4) : null;
+  const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.002).toFixed(4) : null;
 
   // ─── Styles ────────────────────────────────────────────────────────────────
   const C = { bg:"#080a0f", card:"#0f1117", border:"#1c2133", accent:"#00e5a0", accent2:"#0099ff", text:"#e8eaf2", muted:"#5a6478", error:"#ff5f5f" };
@@ -260,7 +311,6 @@ export default function NomaPay() {
     root:{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'DM Mono','Fira Code','Courier New',monospace", position:"relative", overflowX:"hidden" },
     bgGlow:{ position:"fixed", inset:0, background:`radial-gradient(ellipse 70% 40% at 15% 10%, rgba(0,229,160,0.07) 0%, transparent 55%), radial-gradient(ellipse 50% 35% at 85% 85%, rgba(0,153,255,0.06) 0%, transparent 55%)`, pointerEvents:"none", zIndex:0 },
     bgGrid:{ position:"fixed", inset:0, backgroundImage:`linear-gradient(${C.border} 1px, transparent 1px),linear-gradient(90deg,${C.border} 1px, transparent 1px)`, backgroundSize:"44px 44px", opacity:0.25, pointerEvents:"none", zIndex:0 },
-    // FIX 4: Header uses flexWrap so it works on mobile
     header:{ position:"relative", zIndex:20, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 18px", borderBottom:`1px solid ${C.border}`, backdropFilter:"blur(14px)", background:"rgba(8,10,15,0.95)", flexWrap:"wrap", gap:8 },
     logo:{ display:"flex", alignItems:"center", gap:10 },
     logoMark:{ fontSize:20, color:C.accent },
@@ -273,14 +323,12 @@ export default function NomaPay() {
     bellWrap:{ position:"relative" },
     bellBtn:{ background:"rgba(0,229,160,0.08)", border:`1px solid ${C.border}`, borderRadius:20, width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:15, position:"relative", flexShrink:0 },
     badge:{ position:"absolute", top:-4, right:-4, background:C.error, color:"#fff", borderRadius:"50%", width:17, height:17, fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" },
-    // FIX 4: Notif panel uses position:fixed so it never hides on mobile or small screens
     notifPanel:{ position:"fixed", top:64, right:12, width:"min(320px, calc(100vw - 24px))", background:C.card, border:`1px solid ${C.border}`, borderRadius:14, boxShadow:"0 8px 40px rgba(0,0,0,0.6)", zIndex:500, overflow:"hidden" },
     notifHeader:{ padding:"13px 15px", borderBottom:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" },
     notifTitle:{ fontSize:13, fontWeight:700 },
     notifClear:{ fontSize:11, color:C.muted, cursor:"pointer", background:"none", border:"none", fontFamily:"inherit" },
-    notifList:{ maxHeight:"min(400px, 65vh)", overflowY:"auto" },
-    // FIX 2: notifItem is an <a> tag — make it look clickable
-    notifItem:{ padding:"11px 14px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:10, alignItems:"flex-start", cursor:"pointer", textDecoration:"none", color:"inherit" },
+    notifList:{ maxHeight:"min(400px,65vh)", overflowY:"auto" },
+    notifItem:{ padding:"11px 14px", borderBottom:`1px solid ${C.border}`, display:"flex", gap:10, alignItems:"flex-start", textDecoration:"none", color:"inherit" },
     notifIcon:{ width:30, height:30, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, flexShrink:0 },
     notifBody:{ flex:1, minWidth:0 },
     notifMain:{ fontSize:12, fontWeight:600, marginBottom:2, wordBreak:"break-word" },
@@ -351,17 +399,17 @@ export default function NomaPay() {
   };
 
   const getTxIcon = (type) => {
-    if (type === "sent")       return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
-    if (type === "received")   return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
-    if (type === "swap")       return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
-    return                            { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="sent")       return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
+    if (type==="received")   return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="swap")       return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
+    return                          { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
   };
 
   const getTxLabel = (tx) => {
-    if (tx.type === "sent")       return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
-    if (tx.type === "received")   return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
-    if (tx.type === "swap")       return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
-    if (tx.type === "registered") return `Registered ${tx.tag}.noma`;
+    if (tx.type==="sent")       return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
+    if (tx.type==="received")   return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
+    if (tx.type==="swap")       return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
+    if (tx.type==="registered") return `Registered ${tx.tag}.noma`;
     return "Transaction";
   };
 
@@ -378,57 +426,56 @@ export default function NomaPay() {
         </div>
         {account && (
           <div style={s.headerRight}>
-            {/* 🔔 Bell — FIX 4: panel uses position:fixed */}
             <div style={s.bellWrap} ref={notifRef}>
               <div style={s.bellBtn} onClick={() => {
                 setShowNotif(v => !v);
                 setUnreadCount(0);
-                setTxHistory(prev => prev.map(t => ({...t, unread:false})));
+                setTxHistory(prev => {
+                  const u = prev.map(t => ({...t, unread:false}));
+                  saveTxs(tagRef.current, u);
+                  return u;
+                });
               }}>
                 🔔
                 {unreadCount > 0 && <div style={s.badge}>{unreadCount > 9 ? "9+" : unreadCount}</div>}
               </div>
-
               {showNotif && (
                 <div style={s.notifPanel}>
                   <div style={s.notifHeader}>
                     <span style={s.notifTitle}>Transaction History</span>
-                    <button style={s.notifClear} onClick={() => { setTxHistory([]); setShowNotif(false); }}>Clear all</button>
+                    <button style={s.notifClear} onClick={() => {
+                      setTxHistory([]); wipeTxs(tagRef.current); setShowNotif(false);
+                    }}>Clear all</button>
                   </div>
                   <div style={s.notifList}>
-                    {txHistory.length === 0 ? (
-                      <div style={s.notifEmpty}>No transactions yet</div>
-                    ) : txHistory.map((tx) => {
-                      const { icon, bg, color } = getTxIcon(tx.type);
-                      // FIX 2: entire row is a clickable link to explorer
-                      const explorerUrl = tx.hash ? `https://testnet.arcscan.app/tx/${tx.hash}` : null;
-                      return (
-                        <a
-                          key={tx.id}
-                          href={explorerUrl || "#"}
-                          target={explorerUrl ? "_blank" : "_self"}
-                          rel="noreferrer"
-                          style={{ ...s.notifItem, background: tx.unread ? "rgba(0,229,160,0.04)" : "transparent" }}
-                        >
-                          <div style={{...s.notifIcon, background:bg, color}}>{icon}</div>
-                          <div style={s.notifBody}>
-                            <div style={s.notifMain}>{getTxLabel(tx)}</div>
-                            {tx.fee && <div style={s.notifSub}>Fee: {tx.fee} {tx.token}</div>}
-                            <div style={s.notifTime}>{timeAgo(tx.time)}</div>
-                            {explorerUrl && <span style={s.notifLink}>View on explorer ↗</span>}
-                          </div>
-                        </a>
-                      );
-                    })}
+                    {txHistory.length === 0
+                      ? <div style={s.notifEmpty}>No transactions yet</div>
+                      : txHistory.map(tx => {
+                          const { icon, bg, color } = getTxIcon(tx.type);
+                          const url = tx.hash ? `https://testnet.arcscan.app/tx/${tx.hash}` : null;
+                          return (
+                            <a key={tx.id} href={url||"#"} target={url?"_blank":"_self"} rel="noreferrer"
+                              style={{...s.notifItem, background:tx.unread?"rgba(0,229,160,0.04)":"transparent"}}>
+                              <div style={{...s.notifIcon, background:bg, color}}>{icon}</div>
+                              <div style={s.notifBody}>
+                                <div style={s.notifMain}>{getTxLabel(tx)}</div>
+                                {tx.fee && <div style={s.notifSub}>Fee: {tx.fee} {tx.token}</div>}
+                                <div style={s.notifTime}>{timeAgo(tx.time)}</div>
+                                {url && <span style={s.notifLink}>View on explorer ↗</span>}
+                              </div>
+                            </a>
+                          );
+                        })
+                    }
                   </div>
                 </div>
               )}
             </div>
-
             <div style={s.pill}><span style={s.dot}/>{short(account)}</div>
             <button style={s.disconnectBtn} onClick={async () => {
+              stopPolling();
               setAccount(null); setUsername(""); setStep("connect");
-              setTxHistory([]); setUnreadCount(0);
+              setTxHistory([]); setUnreadCount(0); setShowNotif(false);
               if (window.ethereum) await window.ethereum.request({ method:"wallet_revokePermissions", params:[{eth_accounts:{}}] });
             }}>Disconnect</button>
           </div>
@@ -444,13 +491,13 @@ export default function NomaPay() {
             <p style={{...s.sub, fontSize:12, color:C.accent, letterSpacing:"0.06em", marginBottom:6}}>WELCOME TO NOMAPAY</p>
             <p style={s.sub}>A cross-border payment platform built on Arc Testnet. Send USDC & EURC globally using just a .noma tag — no addresses, no friction, just payments.</p>
             <div style={{display:"flex", gap:6, justifyContent:"center", flexWrap:"wrap", marginBottom:18}}>
-              {["⚡ Instant","🌍 Cross-border","🔒 On-chain","💵 USDC & EURC"].map(tag => (
-                <span key={tag} style={{fontSize:10, background:"rgba(0,229,160,0.08)", border:"1px solid rgba(0,229,160,0.2)", color:C.accent, padding:"3px 9px", borderRadius:20}}>{tag}</span>
+              {["⚡ Instant","🌍 Cross-border","🔒 On-chain","💵 USDC & EURC"].map(t => (
+                <span key={t} style={{fontSize:10, background:"rgba(0,229,160,0.08)", border:"1px solid rgba(0,229,160,0.2)", color:C.accent, padding:"3px 9px", borderRadius:20}}>{t}</span>
               ))}
             </div>
             <div style={s.features}>
-              {[["◆","Username-based payments"],["◆","USDC & EURC support"],["◆","Built-in token swap"],["◆","Arc Testnet native"],["◆","0.5% fee per send"]].map(([icon,f])=>(
-                <div key={f} style={s.feat}><span style={s.featIcon}>{icon}</span>{f}</div>
+              {[["◆","Username-based payments"],["◆","USDC & EURC support"],["◆","Built-in token swap"],["◆","Arc Testnet native"],["◆","0.5% fee per send"]].map(([i,f])=>(
+                <div key={f} style={s.feat}><span style={s.featIcon}>{i}</span>{f}</div>
               ))}
             </div>
             <button style={s.btnPrimary} onClick={connectWallet}>Connect Wallet →</button>
@@ -492,18 +539,18 @@ export default function NomaPay() {
               <div style={s.userAddr}>{short(account)}</div>
             </div>
             <div style={{display:"flex", gap:6}}>
-              {[["USDC",usdcBal],["EURC",eurcBal]].map(([t,bal])=>(
+              {[["USDC",usdcBal],["EURC",eurcBal]].map(([t,b])=>(
                 <div key={t} style={{background:"#0b0d12",border:`1px solid ${C.border}`,borderRadius:8,padding:"5px 10px",textAlign:"right"}}>
                   <div style={{fontSize:8,color:C.muted,textTransform:"uppercase",letterSpacing:"0.1em"}}>{t}</div>
-                  <div style={{fontSize:12,fontWeight:600}}>{bal}</div>
+                  <div style={{fontSize:12,fontWeight:600}}>{b}</div>
                 </div>
               ))}
             </div>
           </div>
 
           <div style={s.tabs}>
-            {[["send","↗ Send"],["swap","⇄ Swap"],["profile","◉ Profile"]].map(([id,label])=>(
-              <button key={id} style={{...s.tabBtn,...(tab===id?s.tabActive:{})}} onClick={()=>setTab(id)}>{label}</button>
+            {[["send","↗ Send"],["swap","⇄ Swap"],["profile","◉ Profile"]].map(([id,l])=>(
+              <button key={id} style={{...s.tabBtn,...(tab===id?s.tabActive:{})}} onClick={()=>setTab(id)}>{l}</button>
             ))}
           </div>
 
@@ -514,8 +561,7 @@ export default function NomaPay() {
               <label style={s.label}>Recipient</label>
               <div style={s.inputWrap}>
                 <span style={s.atSign}>@</span>
-                <input style={s.input} placeholder="nomatag" value={sendTo}
-                  onChange={e=>setSendTo(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g,""))}/>
+                <input style={s.input} placeholder="nomatag" value={sendTo} onChange={e=>setSendTo(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g,""))}/>
                 <span style={s.nomaTag}>.noma</span>
               </div>
               <label style={s.label}>Token</label>
