@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 
-// ─── Arc Testnet Config ─────────────────────────────────────────────────────
+// ─── Config ─────────────────────────────────────────────────────────────────
 const ARC_TESTNET = {
   chainId: "0x4cef52",
   chainName: "Arc Testnet",
@@ -15,46 +15,57 @@ const USDC_ADDRESS     = "0x3600000000000000000000000000000000000000";
 const EURC_ADDRESS     = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
 const RPC              = "https://rpc.testnet.arc.network";
 
-const short = (addr) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : "";
+// Full ABI for decoding events
+const CONTRACT_ABI = [
+  "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)",
+  "event UsernameRegistered(string username, address wallet)",
+  "function getUsername(address wallet) view returns (string)",
+  "function registerUsername(string username)",
+  "function sendToUsername(string toUsername, address token, uint256 amount)",
+  "function swap(address fromToken, uint256 amount)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+
+const ERC20_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
+
+const short   = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "";
 const timeAgo = (ts) => {
-  const diff = Date.now() - ts;
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
-  return `${Math.floor(diff/86400000)}d ago`;
+  const d = Date.now() - ts;
+  if (d < 60000)    return "just now";
+  if (d < 3600000)  return `${Math.floor(d/60000)}m ago`;
+  if (d < 86400000) return `${Math.floor(d/3600000)}h ago`;
+  return `${Math.floor(d/86400000)}d ago`;
 };
 
-// ── localStorage helpers ───────────────────────────────────────────────────
-const TX_KEY  = (tag) => `nomapay_txs_v2_${tag}`;
-const saveTxs = (tag, txs) => { try { localStorage.setItem(TX_KEY(tag), JSON.stringify(txs)); } catch(e) {} };
-const loadTxs = (tag) => { try { return JSON.parse(localStorage.getItem(TX_KEY(tag)) || "[]"); } catch(e) { return []; } };
-const wipeTxs = (tag) => { try { localStorage.removeItem(TX_KEY(tag)); } catch(e) {} };
+// Storage
+const STORAGE_KEY = (tag) => `noma_history_v3_${tag}`;
+const saveHistory = (tag, data) => { try { localStorage.setItem(STORAGE_KEY(tag), JSON.stringify(data)); } catch(e) {} };
+const loadHistory = (tag) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY(tag)) || "[]"); } catch(e) { return []; } };
+const clearHistory = (tag) => { try { localStorage.removeItem(STORAGE_KEY(tag)); } catch(e) {} };
 
 export default function NomaPay() {
   const [account, setAccount]   = useState(null);
   const [username, setUsername] = useState("");
   const [tab, setTab]           = useState("send");
   const [step, setStep]         = useState("connect");
-
-  const [sendTo, setSendTo]         = useState("");
+  const [sendTo, setSendTo]     = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [sendToken, setSendToken]   = useState("USDC");
   const [sendStatus, setSendStatus] = useState(null);
-
   const [swapFrom, setSwapFrom]     = useState("USDC");
   const [swapAmount, setSwapAmount] = useState("");
   const [swapStatus, setSwapStatus] = useState(null);
-
   const [regInput, setRegInput]     = useState("");
   const [regStatus, setRegStatus]   = useState(null);
   const [regLoading, setRegLoading] = useState(false);
-
-  const [usdcBal, setUsdcBal] = useState("0.00");
-  const [eurcBal, setEurcBal] = useState("0.00");
-  const [toast, setToast]     = useState(null);
-
-  const [txHistory, setTxHistory]     = useState([]);
-  const [showNotif, setShowNotif]     = useState(false);
+  const [usdcBal, setUsdcBal]       = useState("0.00");
+  const [eurcBal, setEurcBal]       = useState("0.00");
+  const [toast, setToast]           = useState(null);
+  const [txHistory, setTxHistory]   = useState([]);
+  const [showNotif, setShowNotif]   = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
   const notifRef    = useRef(null);
@@ -67,102 +78,109 @@ export default function NomaPay() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  // Close notif on outside click
   useEffect(() => {
     const h = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // ── Fetch balances ─────────────────────────────────────────────────────────
+  // ── Fetch balances ────────────────────────────────────────────────────────
   const fetchBalances = async (addr) => {
     if (!addr) return;
     try {
-      const p   = new ethers.JsonRpcProvider(RPC);
-      const abi = ["function balanceOf(address) view returns (uint256)"];
+      const p = new ethers.JsonRpcProvider(RPC);
       const [u, e] = await Promise.all([
-        new ethers.Contract(USDC_ADDRESS, abi, p).balanceOf(addr),
-        new ethers.Contract(EURC_ADDRESS, abi, p).balanceOf(addr),
+        new ethers.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+        new ethers.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
       ]);
       setUsdcBal((Number(u) / 1e6).toFixed(2));
       setEurcBal((Number(e) / 1e6).toFixed(2));
-    } catch(err) { console.error("Balance error:", err); }
+    } catch(e) { console.error("Balance error:", e); }
   };
 
-  // ── Fetch on-chain tx history ──────────────────────────────────────────────
-  const fetchOnChainTxs = async (tag) => {
+  // ── Fetch ALL TokenSent events and filter by tag ──────────────────────────
+  const fetchOnChainHistory = async (tag) => {
     if (!tag) return;
     try {
       const provider = new ethers.JsonRpcProvider(RPC);
+      const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
 
-      // Use raw event signature to avoid indexed string filter issues
-      const iface = new ethers.Interface([
-        "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
-      ]);
-      const topic = iface.getEvent("TokenSent").topicHash;
-
+      // Get current block and scan last 50000 blocks
       const currentBlock = await provider.getBlockNumber();
-      const fromBlock    = Math.max(0, currentBlock - 10000);
+      const fromBlock    = Math.max(0, currentBlock - 50000);
 
-      // Fetch ALL TokenSent logs from contract
-      const logs = await provider.getLogs({
-        address: NOMAPAY_CONTRACT,
-        topics: [topic],
+      // Query ALL TokenSent events without any filter
+      // This gets every event emitted by the contract
+      const events = await contract.queryFilter(
+        contract.filters.TokenSent(),
         fromBlock,
-        toBlock: "latest",
-      });
+        "latest"
+      );
 
-      const existing   = loadTxs(tag);
+      const existing    = loadHistory(tag);
       const existingIds = new Set(existing.map(t => t.id));
-      const newEntries = [];
+      const newEntries  = [];
 
-      for (const log of logs.reverse()) {
-        if (existingIds.has(log.transactionHash)) continue;
+      // Process events in reverse (newest first)
+      for (const event of [...events].reverse()) {
+        if (existingIds.has(event.transactionHash)) continue;
+
+        // event.args contains decoded data
+        const fromUser = event.args[0]; // fromUsername (string)
+        const toUser   = event.args[1]; // toUsername (string)
+
+        // Only keep events relevant to this user
+        if (fromUser !== tag && toUser !== tag) continue;
+
+        let blockTime = Date.now();
         try {
-          const parsed = iface.parseLog(log);
-          const from   = parsed.args.fromUsername;
-          const to     = parsed.args.toUsername;
-          if (from !== tag && to !== tag) continue;
+          const block = await provider.getBlock(event.blockNumber);
+          if (block) blockTime = block.timestamp * 1000;
+        } catch(e) {}
 
-          const block    = await provider.getBlock(log.blockNumber);
-          const tokenSym = parsed.args.token.toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+        const tokenSym = event.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+        const amount   = (Number(event.args[3]) / 1e6).toFixed(2);
+        const fee      = (Number(event.args[4]) / 1e6).toFixed(4);
 
-          newEntries.push({
-            id:     log.transactionHash,
-            type:   from === tag ? "sent" : "received",
-            from,   to,
-            amount: (Number(parsed.args.amount) / 1e6).toFixed(2),
-            fee:    (Number(parsed.args.fee)    / 1e6).toFixed(4),
-            token:  tokenSym,
-            time:   block ? block.timestamp * 1000 : Date.now(),
-            hash:   log.transactionHash,
-            unread: true,
-          });
-        } catch(e) { continue; }
+        newEntries.push({
+          id:     event.transactionHash,
+          type:   fromUser === tag ? "sent" : "received",
+          from:   fromUser,
+          to:     toUser,
+          amount, fee,
+          token:  tokenSym,
+          time:   blockTime,
+          hash:   event.transactionHash,
+          unread: true,
+        });
       }
 
       if (newEntries.length > 0) {
-        const merged = [...newEntries, ...existing].slice(0, 50);
+        const merged = [...newEntries, ...existing].slice(0, 100);
         setTxHistory(merged);
-        saveTxs(tag, merged);
+        saveHistory(tag, merged);
         setUnreadCount(c => c + newEntries.length);
-      } else if (existing.length > 0 && txHistory.length === 0) {
-        // Load from storage when reconnecting
+      } else if (existing.length > 0) {
         setTxHistory(existing);
       }
-    } catch(err) { console.error("Tx fetch error:", err); }
+    } catch(err) {
+      console.error("History fetch error:", err);
+      // Fallback: show saved history even if fetch fails
+      const saved = loadHistory(tag);
+      if (saved.length > 0) setTxHistory(saved);
+    }
   };
 
-  // ── Start polling after login ──────────────────────────────────────────────
+  // ── Polling ───────────────────────────────────────────────────────────────
   const startPolling = (addr, tag) => {
     accountRef.current = addr;
     tagRef.current     = tag;
     if (intervalRef.current) clearInterval(intervalRef.current);
     fetchBalances(addr);
-    fetchOnChainTxs(tag);
+    fetchOnChainHistory(tag);
     intervalRef.current = setInterval(() => {
       fetchBalances(accountRef.current);
-      fetchOnChainTxs(tagRef.current);
+      fetchOnChainHistory(tagRef.current);
     }, 30000);
   };
 
@@ -170,26 +188,26 @@ export default function NomaPay() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
   };
 
-  // ── Enter app ─────────────────────────────────────────────────────────────
+  // ── Enter app (called after login/register) ───────────────────────────────
   const enterApp = (addr, tag) => {
     setAccount(addr);
     setUsername(tag);
-    tagRef.current    = tag;
+    tagRef.current     = tag;
     accountRef.current = addr;
-    // Load saved history immediately so panel shows instantly
-    const saved = loadTxs(tag);
+    // Load saved history immediately
+    const saved = loadHistory(tag);
     if (saved.length > 0) setTxHistory(saved);
     setStep("app");
     startPolling(addr, tag);
   };
 
-  // ── Connect Wallet ─────────────────────────────────────────────────────────
+  // ── Connect Wallet ────────────────────────────────────────────────────────
   const connectWallet = async () => {
     if (!window.ethereum) { showToast("Please install MetaMask", "error"); return; }
     try {
       try {
         await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: ARC_TESTNET.chainId }] });
-      } catch (se) {
+      } catch(se) {
         if (se.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [ARC_TESTNET] });
       }
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
@@ -197,23 +215,22 @@ export default function NomaPay() {
       fetchBalances(accounts[0]);
       setStep("register");
       showToast("Wallet connected!");
-    } catch (err) { showToast("Connection failed: " + err.message, "error"); }
+    } catch(err) { showToast("Connection failed: " + err.message, "error"); }
   };
 
-  // ── Register / detect existing username ───────────────────────────────────
+  // ── Register / detect existing ────────────────────────────────────────────
   const registerUsername = async () => {
     if (!regInput.trim()) return;
     if (!/^[a-z0-9_]{3,20}$/.test(regInput)) {
-      setRegStatus({ type: "error", msg: "3–20 chars: lowercase letters, numbers, underscore only." });
+      setRegStatus({ type: "error", msg: "3–20 chars: lowercase, numbers, underscore only." });
       return;
     }
     setRegLoading(true);
     setRegStatus({ type: "loading", msg: "Checking on-chain…" });
 
-    // Check if already registered
     try {
       const p   = new ethers.JsonRpcProvider(RPC);
-      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function getUsername(address) view returns (string)"], p);
+      const c   = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, p);
       const existing = await c.getUsername(account);
       if (existing && existing.length > 0) {
         localStorage.setItem(`nomapay_user_${account}`, existing);
@@ -224,39 +241,38 @@ export default function NomaPay() {
       }
     } catch(e) {}
 
-    // New registration
     setRegStatus({ type: "loading", msg: "Step 1/2 — Approve USDC fee…" });
     try {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
-      const usdc   = new ethers.Contract(USDC_ADDRESS, ["function approve(address,uint256) returns(bool)"], signer);
+      const usdc   = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, signer);
       await (await usdc.approve(NOMAPAY_CONTRACT, ethers.parseUnits("0.5", 6))).wait();
       setRegStatus({ type: "loading", msg: "Step 2/2 — Registering .noma tag…" });
-      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function registerUsername(string)"], signer);
-      const tx  = await c.registerUsername(regInput);
+      const c  = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer);
+      const tx = await c.registerUsername(regInput);
       setRegStatus({ type: "loading", msg: "Confirming…" });
       await tx.wait();
       localStorage.setItem(`nomapay_user_${account}`, regInput);
-      // Save registration entry
-      const regEntry = [{ id:`reg_${Date.now()}`, type:"registered", tag:regInput, hash:tx.hash, time:Date.now(), unread:false }];
-      saveTxs(regInput, regEntry);
       showToast(`${regInput}.noma registered! 🎉`);
       enterApp(account, regInput);
-    } catch (err) { setRegStatus({ type: "error", msg: err.message }); }
+    } catch(err) { setRegStatus({ type: "error", msg: err.message }); }
     setRegLoading(false);
   };
 
-  // ── Add a tx locally + save ────────────────────────────────────────────────
+  // ── Add local TX ──────────────────────────────────────────────────────────
   const addLocalTx = (tx) => {
+    const entry = { ...tx, time: Date.now(), unread: false };
     setTxHistory(prev => {
-      const updated = [{ ...tx, time: Date.now(), unread: false }, ...prev].slice(0, 50);
-      saveTxs(tagRef.current, updated);
+      // Avoid duplicate if on-chain fetch already added it
+      if (prev.find(t => t.id === entry.id)) return prev;
+      const updated = [entry, ...prev].slice(0, 100);
+      saveHistory(tagRef.current, updated);
       return updated;
     });
     setUnreadCount(c => c + 1);
   };
 
-  // ── Send ───────────────────────────────────────────────────────────────────
+  // ── Send ──────────────────────────────────────────────────────────────────
   const sendTokens = async () => {
     if (!sendTo || !sendAmount || parseFloat(sendAmount) <= 0) { showToast("Enter recipient and amount", "error"); return; }
     setSendStatus("pending");
@@ -265,47 +281,47 @@ export default function NomaPay() {
       const signer = await p.getSigner();
       const tAddr  = sendToken === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
       const amt    = ethers.parseUnits(sendAmount, 6);
-      await (await new ethers.Contract(tAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
-      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function sendToUsername(string,address,uint256)"], signer).sendToUsername(sendTo, tAddr, amt);
+      await (await new ethers.Contract(tAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).sendToUsername(sendTo, tAddr, amt);
       await tx.wait();
-      const fee = (parseFloat(sendAmount)*0.005).toFixed(4);
-      const net = (parseFloat(sendAmount)-parseFloat(fee)).toFixed(4);
-      addLocalTx({ id:tx.hash, type:"sent", from:username, to:sendTo, amount:net, fee, token:sendToken, hash:tx.hash });
+      const fee = (parseFloat(sendAmount) * 0.005).toFixed(4);
+      const net = (parseFloat(sendAmount) - parseFloat(fee)).toFixed(4);
+      addLocalTx({ id: tx.hash, type: "sent", from: username, to: sendTo, amount: net, fee, token: sendToken, hash: tx.hash });
       showToast(`Sent ${net} ${sendToken} to ${sendTo}.noma!`);
       setSendAmount(""); setSendTo(""); setSendStatus("done");
       fetchBalances(account);
       setTimeout(() => setSendStatus(null), 2000);
-    } catch(err) { showToast("Send failed: "+err.message,"error"); setSendStatus(null); }
+    } catch(err) { showToast("Send failed: " + err.message, "error"); setSendStatus(null); }
   };
 
-  // ── Swap ───────────────────────────────────────────────────────────────────
+  // ── Swap ──────────────────────────────────────────────────────────────────
   const swapTokens = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap","error"); return; }
+    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap", "error"); return; }
     setSwapStatus("pending");
     try {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
       const fAddr  = swapFrom === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
       const amt    = ethers.parseUnits(swapAmount, 6);
-      await (await new ethers.Contract(fAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
-      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function swap(address,uint256)"], signer).swap(fAddr, amt);
+      await (await new ethers.Contract(fAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).swap(fAddr, amt);
       await tx.wait();
-      const toToken = swapFrom==="USDC"?"EURC":"USDC";
-      const net     = (parseFloat(swapAmount)*0.998).toFixed(4);
-      addLocalTx({ id:tx.hash, type:"swap", from:swapFrom, to:toToken, amount:swapAmount, net, token:swapFrom, hash:tx.hash });
+      const toToken = swapFrom === "USDC" ? "EURC" : "USDC";
+      const net     = (parseFloat(swapAmount) * 0.998).toFixed(4);
+      addLocalTx({ id: tx.hash, type: "swap", from: swapFrom, to: toToken, amount: swapAmount, net, token: swapFrom, hash: tx.hash });
       showToast(`Swapped ${swapAmount} ${swapFrom} → ${net} ${toToken}`);
       setSwapAmount(""); setSwapStatus("done");
       fetchBalances(account);
       setTimeout(() => setSwapStatus(null), 2000);
-    } catch(err) { showToast("Swap failed: "+err.message,"error"); setSwapStatus(null); }
+    } catch(err) { showToast("Swap failed: " + err.message, "error"); setSwapStatus(null); }
   };
 
-  const swapTo         = swapFrom==="USDC"?"EURC":"USDC";
+  const swapTo         = swapFrom === "USDC" ? "EURC" : "USDC";
   const sendFeePreview = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount)*0.005).toFixed(4) : null;
   const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.998).toFixed(4) : null;
   const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.002).toFixed(4) : null;
 
-  // ─── Styles ────────────────────────────────────────────────────────────────
+  // ── Styles ────────────────────────────────────────────────────────────────
   const C = { bg:"#080a0f", card:"#0f1117", border:"#1c2133", accent:"#00e5a0", accent2:"#0099ff", text:"#e8eaf2", muted:"#5a6478", error:"#ff5f5f" };
   const s = {
     root:{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'DM Mono','Fira Code','Courier New',monospace", position:"relative", overflowX:"hidden" },
@@ -399,17 +415,16 @@ export default function NomaPay() {
   };
 
   const getTxIcon = (type) => {
-    if (type==="sent")       return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
-    if (type==="received")   return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
-    if (type==="swap")       return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
-    return                          { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="sent")     return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
+    if (type==="received") return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="swap")     return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
+    return                        { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
   };
 
   const getTxLabel = (tx) => {
-    if (tx.type==="sent")       return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
-    if (tx.type==="received")   return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
-    if (tx.type==="swap")       return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
-    if (tx.type==="registered") return `Registered ${tx.tag}.noma`;
+    if (tx.type==="sent")     return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
+    if (tx.type==="received") return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
+    if (tx.type==="swap")     return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
     return "Transaction";
   };
 
@@ -432,7 +447,7 @@ export default function NomaPay() {
                 setUnreadCount(0);
                 setTxHistory(prev => {
                   const u = prev.map(t => ({...t, unread:false}));
-                  saveTxs(tagRef.current, u);
+                  saveHistory(tagRef.current, u);
                   return u;
                 });
               }}>
@@ -444,7 +459,7 @@ export default function NomaPay() {
                   <div style={s.notifHeader}>
                     <span style={s.notifTitle}>Transaction History</span>
                     <button style={s.notifClear} onClick={() => {
-                      setTxHistory([]); wipeTxs(tagRef.current); setShowNotif(false);
+                      setTxHistory([]); clearHistory(tagRef.current); setShowNotif(false);
                     }}>Clear all</button>
                   </div>
                   <div style={s.notifList}>
@@ -482,7 +497,6 @@ export default function NomaPay() {
         )}
       </header>
 
-      {/* CONNECT */}
       {step==="connect" && (
         <div style={s.center}>
           <div style={s.card}>
@@ -505,7 +519,6 @@ export default function NomaPay() {
         </div>
       )}
 
-      {/* REGISTER */}
       {step==="register" && (
         <div style={s.center}>
           <div style={s.card}>
@@ -530,7 +543,6 @@ export default function NomaPay() {
         </div>
       )}
 
-      {/* APP */}
       {step==="app" && (
         <div style={s.appWrap}>
           <div style={s.userBar}>
