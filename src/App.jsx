@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 
-// ─── Arc Testnet Config ─────────────────────────────────────────────────────
+// ─── Config ──────────────────────────────────────────────────────────────────
 const ARC_TESTNET = {
   chainId: "0x4cef52",
   chainName: "Arc Testnet",
@@ -15,20 +15,46 @@ const USDC_ADDRESS     = "0x3600000000000000000000000000000000000000";
 const EURC_ADDRESS     = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
 const RPC              = "https://rpc.testnet.arc.network";
 
-const short = (addr) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : "";
-const timeAgo = (ts) => {
-  const diff = Date.now() - ts;
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
-  return `${Math.floor(diff/86400000)}d ago`;
-};
+const CONTRACT_ABI = [
+  "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)",
+  "function getUsername(address wallet) view returns (string)",
+  "function registerUsername(string username)",
+  "function sendToUsername(string toUsername, address token, uint256 amount)",
+  "function swap(address fromToken, uint256 amount)",
+];
+const ERC20_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+];
 
-// ── localStorage helpers ───────────────────────────────────────────────────
-const TX_KEY  = (tag) => `nomapay_txs_v2_${tag}`;
-const saveTxs = (tag, txs) => { try { localStorage.setItem(TX_KEY(tag), JSON.stringify(txs)); } catch(e) {} };
-const loadTxs = (tag) => { try { return JSON.parse(localStorage.getItem(TX_KEY(tag)) || "[]"); } catch(e) { return []; } };
-const wipeTxs = (tag) => { try { localStorage.removeItem(TX_KEY(tag)); } catch(e) {} };
+// Remittance corridors
+const CORRIDORS = [
+  { from: "🇦🇪 UAE",      to: "🇳🇬 Nigeria",      code: "UAE→NG" },
+  { from: "🇦🇪 UAE",      to: "🇮🇳 India",        code: "UAE→IN" },
+  { from: "🇦🇪 UAE",      to: "🇵🇭 Philippines",  code: "UAE→PH" },
+  { from: "🇦🇪 UAE",      to: "🇵🇰 Pakistan",     code: "UAE→PK" },
+  { from: "🇦🇪 UAE",      to: "🇬🇧 UK",           code: "UAE→UK" },
+  { from: "🇦🇪 UAE",      to: "🇺🇸 USA",          code: "UAE→US" },
+  { from: "🇦🇪 UAE",      to: "🇰🇪 Kenya",        code: "UAE→KE" },
+  { from: "🇦🇪 UAE",      to: "🇬🇭 Ghana",        code: "UAE→GH" },
+  { from: "🌍 Global",    to: "🌍 Global",         code: "GLOBAL" },
+];
+
+const short = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "";
+const timeAgo = (ts) => {
+  const d = Date.now() - ts;
+  if (d < 60000)    return "just now";
+  if (d < 3600000)  return `${Math.floor(d/60000)}m ago`;
+  if (d < 86400000) return `${Math.floor(d/3600000)}h ago`;
+  return `${Math.floor(d/86400000)}d ago`;
+};
+const fmtTime = (ts) => new Date(ts).toLocaleString();
+
+// Storage
+const STORAGE_KEY  = (tag) => `noma_history_v3_${tag}`;
+const saveHistory  = (tag, data) => { try { localStorage.setItem(STORAGE_KEY(tag), JSON.stringify(data)); } catch(e) {} };
+const loadHistory  = (tag) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY(tag)) || "[]"); } catch(e) { return []; } };
+const clearHistory = (tag) => { try { localStorage.removeItem(STORAGE_KEY(tag)); } catch(e) {} };
 
 export default function NomaPay() {
   const [account, setAccount]   = useState(null);
@@ -40,6 +66,9 @@ export default function NomaPay() {
   const [sendAmount, setSendAmount] = useState("");
   const [sendToken, setSendToken]   = useState("USDC");
   const [sendStatus, setSendStatus] = useState(null);
+  const [corridor, setCorridor]     = useState(CORRIDORS[0]);
+  const [showReceipt, setShowReceipt] = useState(null);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const [swapFrom, setSwapFrom]     = useState("USDC");
   const [swapAmount, setSwapAmount] = useState("");
@@ -49,120 +78,109 @@ export default function NomaPay() {
   const [regStatus, setRegStatus]   = useState(null);
   const [regLoading, setRegLoading] = useState(false);
 
-  const [usdcBal, setUsdcBal] = useState("0.00");
-  const [eurcBal, setEurcBal] = useState("0.00");
-  const [toast, setToast]     = useState(null);
-
-  const [txHistory, setTxHistory]     = useState([]);
-  const [showNotif, setShowNotif]     = useState(false);
+  const [usdcBal, setUsdcBal]       = useState("0.00");
+  const [eurcBal, setEurcBal]       = useState("0.00");
+  const [toast, setToast]           = useState(null);
+  const [txHistory, setTxHistory]   = useState([]);
+  const [showNotif, setShowNotif]   = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const notifRef    = useRef(null);
-  const tagRef      = useRef("");
-  const accountRef  = useRef("");
+  // Pay link mode — detect /pay/:tag in URL
+  const [payLinkTag, setPayLinkTag] = useState(null);
+
+  const notifRef   = useRef(null);
+  const tagRef     = useRef("");
+  const accountRef = useRef("");
   const intervalRef = useRef(null);
 
-  const showToast = (msg, type = "success") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
+  // Detect pay link
+  useEffect(() => {
+    const path = window.location.pathname;
+    const match = path.match(/^\/pay\/([a-z0-9_]+)$/);
+    if (match) {
+      setPayLinkTag(match[1]);
+      setSendTo(match[1]);
+      setTab("send");
+    }
+  }, []);
 
-  // Close notif on outside click
   useEffect(() => {
     const h = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // ── Fetch balances ─────────────────────────────────────────────────────────
+  // ── Balances ───────────────────────────────────────────────────────────────
   const fetchBalances = async (addr) => {
     if (!addr) return;
     try {
-      const p   = new ethers.JsonRpcProvider(RPC);
-      const abi = ["function balanceOf(address) view returns (uint256)"];
+      const p = new ethers.JsonRpcProvider(RPC);
       const [u, e] = await Promise.all([
-        new ethers.Contract(USDC_ADDRESS, abi, p).balanceOf(addr),
-        new ethers.Contract(EURC_ADDRESS, abi, p).balanceOf(addr),
+        new ethers.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+        new ethers.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
       ]);
       setUsdcBal((Number(u) / 1e6).toFixed(2));
       setEurcBal((Number(e) / 1e6).toFixed(2));
-    } catch(err) { console.error("Balance error:", err); }
+    } catch(e) {}
   };
 
-  // ── Fetch on-chain tx history ──────────────────────────────────────────────
-  const fetchOnChainTxs = async (tag) => {
+  // ── On-chain history ───────────────────────────────────────────────────────
+  const fetchOnChainHistory = async (tag) => {
     if (!tag) return;
     try {
       const provider = new ethers.JsonRpcProvider(RPC);
-
-      // Use raw event signature to avoid indexed string filter issues
-      const iface = new ethers.Interface([
-        "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
-      ]);
-      const topic = iface.getEvent("TokenSent").topicHash;
-
+      const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
       const currentBlock = await provider.getBlockNumber();
-      const fromBlock    = Math.max(0, currentBlock - 10000);
+      const fromBlock    = Math.max(0, currentBlock - 50000);
+      const events       = await contract.queryFilter(contract.filters.TokenSent(), fromBlock, "latest");
+      const existing     = loadHistory(tag);
+      const existingIds  = new Set(existing.map(t => t.id));
+      const newEntries   = [];
 
-      // Fetch ALL TokenSent logs from contract
-      const logs = await provider.getLogs({
-        address: NOMAPAY_CONTRACT,
-        topics: [topic],
-        fromBlock,
-        toBlock: "latest",
-      });
-
-      const existing   = loadTxs(tag);
-      const existingIds = new Set(existing.map(t => t.id));
-      const newEntries = [];
-
-      for (const log of logs.reverse()) {
-        if (existingIds.has(log.transactionHash)) continue;
-        try {
-          const parsed = iface.parseLog(log);
-          const from   = parsed.args.fromUsername;
-          const to     = parsed.args.toUsername;
-          if (from !== tag && to !== tag) continue;
-
-          const block    = await provider.getBlock(log.blockNumber);
-          const tokenSym = parsed.args.token.toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
-
-          newEntries.push({
-            id:     log.transactionHash,
-            type:   from === tag ? "sent" : "received",
-            from,   to,
-            amount: (Number(parsed.args.amount) / 1e6).toFixed(2),
-            fee:    (Number(parsed.args.fee)    / 1e6).toFixed(4),
-            token:  tokenSym,
-            time:   block ? block.timestamp * 1000 : Date.now(),
-            hash:   log.transactionHash,
-            unread: true,
-          });
-        } catch(e) { continue; }
+      for (const event of [...events].reverse()) {
+        if (existingIds.has(event.transactionHash)) continue;
+        const from = event.args[0];
+        const to   = event.args[1];
+        if (from !== tag && to !== tag) continue;
+        let blockTime = Date.now();
+        try { const b = await provider.getBlock(event.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
+        const tokenSym = event.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+        newEntries.push({
+          id: event.transactionHash,
+          type: from === tag ? "sent" : "received",
+          from, to,
+          amount: (Number(event.args[3]) / 1e6).toFixed(2),
+          fee:    (Number(event.args[4]) / 1e6).toFixed(4),
+          token: tokenSym,
+          time: blockTime,
+          hash: event.transactionHash,
+          unread: true,
+        });
       }
-
       if (newEntries.length > 0) {
-        const merged = [...newEntries, ...existing].slice(0, 50);
+        const merged = [...newEntries, ...existing].slice(0, 100);
         setTxHistory(merged);
-        saveTxs(tag, merged);
+        saveHistory(tag, merged);
         setUnreadCount(c => c + newEntries.length);
-      } else if (existing.length > 0 && txHistory.length === 0) {
-        // Load from storage when reconnecting
+      } else if (existing.length > 0) {
         setTxHistory(existing);
       }
-    } catch(err) { console.error("Tx fetch error:", err); }
+    } catch(err) {
+      const saved = loadHistory(tag);
+      if (saved.length > 0) setTxHistory(saved);
+    }
   };
 
-  // ── Start polling after login ──────────────────────────────────────────────
+  // ── Polling ────────────────────────────────────────────────────────────────
   const startPolling = (addr, tag) => {
     accountRef.current = addr;
     tagRef.current     = tag;
     if (intervalRef.current) clearInterval(intervalRef.current);
     fetchBalances(addr);
-    fetchOnChainTxs(tag);
+    fetchOnChainHistory(tag);
     intervalRef.current = setInterval(() => {
       fetchBalances(accountRef.current);
-      fetchOnChainTxs(tagRef.current);
+      fetchOnChainHistory(tagRef.current);
     }, 30000);
   };
 
@@ -170,26 +188,24 @@ export default function NomaPay() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
   };
 
-  // ── Enter app ─────────────────────────────────────────────────────────────
   const enterApp = (addr, tag) => {
     setAccount(addr);
     setUsername(tag);
-    tagRef.current    = tag;
+    tagRef.current     = tag;
     accountRef.current = addr;
-    // Load saved history immediately so panel shows instantly
-    const saved = loadTxs(tag);
+    const saved = loadHistory(tag);
     if (saved.length > 0) setTxHistory(saved);
     setStep("app");
     startPolling(addr, tag);
   };
 
-  // ── Connect Wallet ─────────────────────────────────────────────────────────
+  // ── Connect ────────────────────────────────────────────────────────────────
   const connectWallet = async () => {
     if (!window.ethereum) { showToast("Please install MetaMask", "error"); return; }
     try {
       try {
         await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: ARC_TESTNET.chainId }] });
-      } catch (se) {
+      } catch(se) {
         if (se.code === 4902) await window.ethereum.request({ method: "wallet_addEthereumChain", params: [ARC_TESTNET] });
       }
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
@@ -197,115 +213,120 @@ export default function NomaPay() {
       fetchBalances(accounts[0]);
       setStep("register");
       showToast("Wallet connected!");
-    } catch (err) { showToast("Connection failed: " + err.message, "error"); }
+    } catch(err) { showToast("Connection failed: " + err.message, "error"); }
   };
 
-  // ── Register / detect existing username ───────────────────────────────────
+  // ── Register ───────────────────────────────────────────────────────────────
   const registerUsername = async () => {
     if (!regInput.trim()) return;
     if (!/^[a-z0-9_]{3,20}$/.test(regInput)) {
-      setRegStatus({ type: "error", msg: "3–20 chars: lowercase letters, numbers, underscore only." });
+      setRegStatus({ type: "error", msg: "3–20 chars: lowercase, numbers, underscore only." });
       return;
     }
     setRegLoading(true);
     setRegStatus({ type: "loading", msg: "Checking on-chain…" });
-
-    // Check if already registered
     try {
-      const p   = new ethers.JsonRpcProvider(RPC);
-      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function getUsername(address) view returns (string)"], p);
-      const existing = await c.getUsername(account);
-      if (existing && existing.length > 0) {
-        localStorage.setItem(`nomapay_user_${account}`, existing);
-        showToast(`Welcome back ${existing}.noma! 🎉`);
-        enterApp(account, existing);
+      const p  = new ethers.JsonRpcProvider(RPC);
+      const c  = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, p);
+      const ex = await c.getUsername(account);
+      if (ex && ex.length > 0) {
+        localStorage.setItem(`nomapay_user_${account}`, ex);
+        showToast(`Welcome back ${ex}.noma! 🎉`);
+        enterApp(account, ex);
         setRegLoading(false);
         return;
       }
     } catch(e) {}
-
-    // New registration
     setRegStatus({ type: "loading", msg: "Step 1/2 — Approve USDC fee…" });
     try {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
-      const usdc   = new ethers.Contract(USDC_ADDRESS, ["function approve(address,uint256) returns(bool)"], signer);
-      await (await usdc.approve(NOMAPAY_CONTRACT, ethers.parseUnits("0.5", 6))).wait();
+      await (await new ethers.Contract(USDC_ADDRESS, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, ethers.parseUnits("0.5", 6))).wait();
       setRegStatus({ type: "loading", msg: "Step 2/2 — Registering .noma tag…" });
-      const c   = new ethers.Contract(NOMAPAY_CONTRACT, ["function registerUsername(string)"], signer);
-      const tx  = await c.registerUsername(regInput);
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).registerUsername(regInput);
       setRegStatus({ type: "loading", msg: "Confirming…" });
       await tx.wait();
       localStorage.setItem(`nomapay_user_${account}`, regInput);
-      // Save registration entry
-      const regEntry = [{ id:`reg_${Date.now()}`, type:"registered", tag:regInput, hash:tx.hash, time:Date.now(), unread:false }];
-      saveTxs(regInput, regEntry);
       showToast(`${regInput}.noma registered! 🎉`);
       enterApp(account, regInput);
-    } catch (err) { setRegStatus({ type: "error", msg: err.message }); }
+    } catch(err) { setRegStatus({ type: "error", msg: err.message }); }
     setRegLoading(false);
   };
 
-  // ── Add a tx locally + save ────────────────────────────────────────────────
+  const showToast = (msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 5000);
+  };
+
   const addLocalTx = (tx) => {
+    const entry = { ...tx, time: Date.now(), unread: false };
     setTxHistory(prev => {
-      const updated = [{ ...tx, time: Date.now(), unread: false }, ...prev].slice(0, 50);
-      saveTxs(tagRef.current, updated);
+      if (prev.find(t => t.id === entry.id)) return prev;
+      const updated = [entry, ...prev].slice(0, 100);
+      saveHistory(tagRef.current, updated);
       return updated;
     });
     setUnreadCount(c => c + 1);
   };
 
   // ── Send ───────────────────────────────────────────────────────────────────
-  const sendTokens = async () => {
-    if (!sendTo || !sendAmount || parseFloat(sendAmount) <= 0) { showToast("Enter recipient and amount", "error"); return; }
+  const executeSend = async () => {
+    setShowConfirm(false);
     setSendStatus("pending");
+    const sendTime = Date.now();
     try {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
       const tAddr  = sendToken === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
       const amt    = ethers.parseUnits(sendAmount, 6);
-      await (await new ethers.Contract(tAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
-      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function sendToUsername(string,address,uint256)"], signer).sendToUsername(sendTo, tAddr, amt);
+      await (await new ethers.Contract(tAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).sendToUsername(sendTo, tAddr, amt);
       await tx.wait();
-      const fee = (parseFloat(sendAmount)*0.005).toFixed(4);
-      const net = (parseFloat(sendAmount)-parseFloat(fee)).toFixed(4);
-      addLocalTx({ id:tx.hash, type:"sent", from:username, to:sendTo, amount:net, fee, token:sendToken, hash:tx.hash });
-      showToast(`Sent ${net} ${sendToken} to ${sendTo}.noma!`);
+      const fee = (parseFloat(sendAmount) * 0.005).toFixed(4);
+      const net = (parseFloat(sendAmount) - parseFloat(fee)).toFixed(4);
+      const receipt = {
+        id: tx.hash, type: "sent", from: username, to: sendTo,
+        amount: net, fee, token: sendToken, hash: tx.hash,
+        time: sendTime, corridor: corridor.code,
+      };
+      addLocalTx(receipt);
+      setShowReceipt(receipt);
       setSendAmount(""); setSendTo(""); setSendStatus("done");
       fetchBalances(account);
       setTimeout(() => setSendStatus(null), 2000);
-    } catch(err) { showToast("Send failed: "+err.message,"error"); setSendStatus(null); }
+    } catch(err) { showToast("Send failed: " + err.message, "error"); setSendStatus(null); }
   };
 
   // ── Swap ───────────────────────────────────────────────────────────────────
   const swapTokens = async () => {
-    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap","error"); return; }
+    if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap", "error"); return; }
     setSwapStatus("pending");
     try {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
       const fAddr  = swapFrom === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
       const amt    = ethers.parseUnits(swapAmount, 6);
-      await (await new ethers.Contract(fAddr, ["function approve(address,uint256) returns(bool)"], signer).approve(NOMAPAY_CONTRACT, amt)).wait();
-      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, ["function swap(address,uint256)"], signer).swap(fAddr, amt);
+      await (await new ethers.Contract(fAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
+      const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).swap(fAddr, amt);
       await tx.wait();
-      const toToken = swapFrom==="USDC"?"EURC":"USDC";
-      const net     = (parseFloat(swapAmount)*0.998).toFixed(4);
-      addLocalTx({ id:tx.hash, type:"swap", from:swapFrom, to:toToken, amount:swapAmount, net, token:swapFrom, hash:tx.hash });
+      const toToken = swapFrom === "USDC" ? "EURC" : "USDC";
+      const net     = (parseFloat(swapAmount) * 0.998).toFixed(4);
+      addLocalTx({ id: tx.hash, type: "swap", from: swapFrom, to: toToken, amount: swapAmount, net, token: swapFrom, hash: tx.hash });
       showToast(`Swapped ${swapAmount} ${swapFrom} → ${net} ${toToken}`);
       setSwapAmount(""); setSwapStatus("done");
       fetchBalances(account);
       setTimeout(() => setSwapStatus(null), 2000);
-    } catch(err) { showToast("Swap failed: "+err.message,"error"); setSwapStatus(null); }
+    } catch(err) { showToast("Swap failed: " + err.message, "error"); setSwapStatus(null); }
   };
 
-  const swapTo         = swapFrom==="USDC"?"EURC":"USDC";
-  const sendFeePreview = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount)*0.005).toFixed(4) : null;
+  const swapTo         = swapFrom === "USDC" ? "EURC" : "USDC";
+  const sendFee        = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount) * 0.005).toFixed(4) : "0";
+  const sendNet        = sendAmount && !isNaN(sendAmount) ? (parseFloat(sendAmount) - parseFloat(sendFee)).toFixed(4) : "0";
   const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.998).toFixed(4) : null;
   const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.002).toFixed(4) : null;
+  const payLink        = `${window.location.origin}/pay/${username}`;
 
-  // ─── Styles ────────────────────────────────────────────────────────────────
+  // ── Styles ─────────────────────────────────────────────────────────────────
   const C = { bg:"#080a0f", card:"#0f1117", border:"#1c2133", accent:"#00e5a0", accent2:"#0099ff", text:"#e8eaf2", muted:"#5a6478", error:"#ff5f5f" };
   const s = {
     root:{ minHeight:"100vh", background:C.bg, color:C.text, fontFamily:"'DM Mono','Fira Code','Courier New',monospace", position:"relative", overflowX:"hidden" },
@@ -337,7 +358,7 @@ export default function NomaPay() {
     notifLink:{ fontSize:10, color:C.accent, marginTop:3, display:"block" },
     notifEmpty:{ padding:"32px 16px", textAlign:"center", color:C.muted, fontSize:13 },
     center:{ position:"relative", zIndex:10, display:"flex", alignItems:"center", justifyContent:"center", minHeight:"calc(100vh - 64px)", padding:20 },
-    card:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:18, padding:"32px 26px", maxWidth:420, width:"100%", boxShadow:"0 0 80px rgba(0,229,160,0.03)" },
+    card:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:18, padding:"32px 26px", maxWidth:440, width:"100%", boxShadow:"0 0 80px rgba(0,229,160,0.03)" },
     logoIcon:{ fontSize:40, color:C.accent, textAlign:"center", marginBottom:10 },
     title:{ fontSize:30, fontWeight:800, textAlign:"center", letterSpacing:"-0.02em", margin:"0 0 8px", background:`linear-gradient(130deg,${C.accent},${C.accent2})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" },
     sub:{ textAlign:"center", color:C.muted, lineHeight:1.75, marginBottom:22, fontSize:13 },
@@ -345,6 +366,7 @@ export default function NomaPay() {
     feat:{ padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:12, color:C.muted, display:"flex", alignItems:"center", gap:10 },
     featIcon:{ color:C.accent },
     btnPrimary:{ width:"100%", padding:"13px 20px", background:`linear-gradient(130deg,${C.accent},${C.accent2})`, color:"#080a0f", border:"none", borderRadius:11, fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" },
+    btnOutline:{ width:"100%", padding:"11px 20px", background:"transparent", color:C.accent, border:`1px solid ${C.accent}`, borderRadius:11, fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"inherit", marginTop:10 },
     stepBadge:{ display:"inline-block", fontSize:10, color:C.accent, background:"rgba(0,229,160,0.1)", padding:"3px 9px", borderRadius:4, marginBottom:12, letterSpacing:"0.08em" },
     cardTitle:{ fontSize:19, fontWeight:700, margin:"0 0 7px" },
     cardSub:{ color:C.muted, fontSize:12, lineHeight:1.65, marginBottom:18 },
@@ -352,17 +374,18 @@ export default function NomaPay() {
     atSign:{ padding:"0 12px", color:C.accent, fontSize:16, fontWeight:700, borderRight:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     nomaTag:{ padding:"0 12px", color:C.muted, fontSize:12, borderLeft:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     input:{ flex:1, background:"transparent", border:"none", outline:"none", color:C.text, fontSize:14, padding:"0 12px", height:46, fontFamily:"inherit", minWidth:0 },
+    select:{ flex:1, background:"transparent", border:"none", outline:"none", color:C.text, fontSize:13, padding:"0 12px", height:46, fontFamily:"inherit", minWidth:0, cursor:"pointer" },
     feeBox:{ display:"flex", justifyContent:"space-between", background:"rgba(0,229,160,0.04)", border:`1px solid rgba(0,229,160,0.14)`, borderRadius:8, padding:"9px 13px", marginBottom:14, fontSize:12 },
     feeAmt:{ color:C.accent, fontWeight:600 },
     statusMsg:{ fontSize:12, marginBottom:12, lineHeight:1.5 },
     hint:{ textAlign:"center", color:C.muted, fontSize:10, marginTop:8 },
     previewTag:{ fontSize:11, color:C.accent, marginBottom:10, textAlign:"center" },
-    appWrap:{ position:"relative", zIndex:10, maxWidth:500, margin:"0 auto", padding:"16px 12px 60px" },
+    appWrap:{ position:"relative", zIndex:10, maxWidth:520, margin:"0 auto", padding:"16px 12px 60px" },
     userBar:{ display:"flex", justifyContent:"space-between", alignItems:"center", background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:"12px 14px", marginBottom:12, flexWrap:"wrap", gap:8 },
     userHandle:{ fontSize:15, fontWeight:700, color:C.accent },
     userAddr:{ fontSize:10, color:C.muted, marginTop:2 },
     tabs:{ display:"flex", gap:3, background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:3, marginBottom:12 },
-    tabBtn:{ flex:1, padding:"9px 4px", background:"transparent", border:"none", color:C.muted, cursor:"pointer", borderRadius:8, fontSize:12, fontFamily:"inherit" },
+    tabBtn:{ flex:1, padding:"9px 4px", background:"transparent", border:"none", color:C.muted, cursor:"pointer", borderRadius:8, fontSize:11, fontFamily:"inherit" },
     tabActive:{ background:"rgba(0,229,160,0.1)", color:C.accent, fontWeight:600 },
     panel:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:"18px 14px" },
     panelTitle:{ fontSize:16, fontWeight:700, margin:"0 0 3px" },
@@ -371,11 +394,12 @@ export default function NomaPay() {
     tokenToggle:{ display:"flex", gap:8, marginBottom:12 },
     tokenBtn:{ flex:1, padding:"10px 6px", background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:8, color:C.muted, cursor:"pointer", fontSize:13, fontFamily:"inherit" },
     tokenBtnActive:{ border:`1px solid ${C.accent}`, color:C.accent, background:"rgba(0,229,160,0.07)" },
-    amtWrap:{ display:"flex", alignItems:"center", background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, marginBottom:6, overflow:"hidden" },
+    amtWrap:{ display:"flex", alignItems:"center", background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, marginBottom:8, overflow:"hidden" },
     amtInput:{ fontSize:20, fontWeight:700, height:52 },
     amtToken:{ padding:"0 13px", color:C.muted, fontSize:12, borderLeft:`1px solid ${C.border}`, height:52, display:"flex", alignItems:"center", flexShrink:0 },
     feeRow:{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, padding:"3px 0" },
-    feeRowNet:{ color:C.accent, fontWeight:600 },
+    feeRowNet:{ color:C.accent, fontWeight:600, fontSize:12 },
+    feeRowTotal:{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:700, padding:"8px 0 0", borderTop:`1px solid ${C.border}`, marginTop:4 },
     swapBox:{ display:"flex", alignItems:"center", gap:8, marginBottom:10 },
     swapSide:{ flex:1, background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px" },
     swapLabel:{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 },
@@ -393,23 +417,50 @@ export default function NomaPay() {
     contractBox:{ background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 12px", marginTop:14 },
     contractLabel:{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:2 },
     contractAddr:{ fontSize:10, color:C.muted, wordBreak:"break-all" },
+    payLinkBox:{ background:"rgba(0,229,160,0.04)", border:`1px solid rgba(0,229,160,0.2)`, borderRadius:8, padding:"10px 13px", marginTop:14 },
+    payLinkLabel:{ fontSize:9, color:C.accent, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 },
+    payLinkUrl:{ fontSize:10, color:C.text, wordBreak:"break-all", marginBottom:6 },
+    copyBtn:{ fontSize:10, background:"rgba(0,229,160,0.1)", border:`1px solid ${C.accent}`, color:C.accent, borderRadius:6, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit" },
     toast:{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", background:"rgba(0,229,160,0.12)", border:`1px solid ${C.accent}`, color:C.accent, padding:"10px 20px", borderRadius:40, fontSize:12, fontWeight:600, zIndex:300, backdropFilter:"blur(12px)", whiteSpace:"nowrap", maxWidth:"calc(100vw - 32px)", overflow:"hidden", textOverflow:"ellipsis" },
     toastErr:{ background:"rgba(255,95,95,0.12)", border:`1px solid ${C.error}`, color:C.error },
     footer:{ position:"relative", zIndex:10, textAlign:"center", padding:"20px", color:C.muted, fontSize:10, letterSpacing:"0.07em", borderTop:`1px solid ${C.border}` },
+    // Confirm modal
+    modal:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:20, backdropFilter:"blur(8px)" },
+    modalBox:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:16, padding:"28px 24px", maxWidth:380, width:"100%", boxShadow:"0 0 60px rgba(0,229,160,0.1)" },
+    modalTitle:{ fontSize:16, fontWeight:700, marginBottom:18, color:C.text },
+    modalRow:{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:`1px solid ${C.border}`, fontSize:13 },
+    modalKey:{ color:C.muted },
+    modalVal:{ fontWeight:600 },
+    modalBtns:{ display:"flex", gap:10, marginTop:20 },
+    modalCancel:{ flex:1, padding:"11px", background:"transparent", border:`1px solid ${C.border}`, color:C.muted, borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:13 },
+    modalConfirm:{ flex:2, padding:"11px", background:`linear-gradient(130deg,${C.accent},${C.accent2})`, border:"none", color:"#080a0f", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:800 },
+    // Receipt
+    receiptBox:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:400, display:"flex", alignItems:"center", justifyContent:"center", padding:20, backdropFilter:"blur(12px)" },
+    receiptCard:{ background:C.card, border:`1px solid ${C.accent}`, borderRadius:18, padding:"32px 26px", maxWidth:380, width:"100%", boxShadow:`0 0 60px rgba(0,229,160,0.15)` },
+    receiptTitle:{ fontSize:28, textAlign:"center", marginBottom:4 },
+    receiptSub:{ fontSize:13, color:C.accent, textAlign:"center", fontWeight:700, marginBottom:20 },
+    receiptAmount:{ fontSize:32, fontWeight:800, textAlign:"center", color:C.accent, marginBottom:4 },
+    receiptToken:{ fontSize:13, color:C.muted, textAlign:"center", marginBottom:20 },
+    receiptRow:{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}`, fontSize:12 },
+    receiptKey:{ color:C.muted },
+    receiptHash:{ fontSize:10, color:C.accent, wordBreak:"break-all", marginTop:8, cursor:"pointer", textDecoration:"underline" },
+    receiptBtns:{ display:"flex", gap:10, marginTop:20 },
+    // Corridor badge
+    corridorBadge:{ display:"flex", alignItems:"center", gap:6, background:"rgba(0,153,255,0.08)", border:`1px solid rgba(0,153,255,0.2)`, borderRadius:8, padding:"6px 10px", marginBottom:12, fontSize:11 },
+    corridorLabel:{ color:C.accent2, fontSize:10, textTransform:"uppercase", letterSpacing:"0.08em" },
   };
 
   const getTxIcon = (type) => {
-    if (type==="sent")       return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
-    if (type==="received")   return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
-    if (type==="swap")       return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
-    return                          { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="sent")     return { icon:"↗", bg:"rgba(255,95,95,0.15)",  color:"#ff5f5f" };
+    if (type==="received") return { icon:"↙", bg:"rgba(0,229,160,0.15)",  color:C.accent };
+    if (type==="swap")     return { icon:"⇄", bg:"rgba(0,153,255,0.15)",  color:C.accent2 };
+    return                        { icon:"◈", bg:"rgba(0,229,160,0.15)",  color:C.accent };
   };
 
   const getTxLabel = (tx) => {
-    if (tx.type==="sent")       return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
-    if (tx.type==="received")   return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
-    if (tx.type==="swap")       return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
-    if (tx.type==="registered") return `Registered ${tx.tag}.noma`;
+    if (tx.type==="sent")     return `Sent ${tx.amount} ${tx.token} to ${tx.to}.noma`;
+    if (tx.type==="received") return `Received ${tx.amount} ${tx.token} from ${tx.from}.noma`;
+    if (tx.type==="swap")     return `Swapped ${tx.amount} ${tx.token} → ${tx.net} ${tx.to}`;
     return "Transaction";
   };
 
@@ -417,6 +468,62 @@ export default function NomaPay() {
     <div style={s.root}>
       <div style={s.bgGlow}/><div style={s.bgGrid}/>
       {toast && <div style={{...s.toast,...(toast.type==="error"?s.toastErr:{})}}>{toast.type==="error"?"✗ ":"✓ "}{toast.msg}</div>}
+
+      {/* ── Confirmation Modal ── */}
+      {showConfirm && (
+        <div style={s.modal}>
+          <div style={s.modalBox}>
+            <div style={s.modalTitle}>Confirm Remittance</div>
+            {[
+              ["Corridor", `${corridor.from} → ${corridor.to}`],
+              ["Recipient", `${sendTo}.noma`],
+              ["You send", `${sendAmount} ${sendToken}`],
+              ["Fee (0.5%)", `${sendFee} ${sendToken}`],
+              ["They receive", `${sendNet} ${sendToken}`],
+              ["Settlement", "< 1 second on Arc"],
+              ["Rail", "USDC on Arc Testnet"],
+            ].map(([k,v]) => (
+              <div key={k} style={s.modalRow}><span style={s.modalKey}>{k}</span><span style={s.modalVal}>{v}</span></div>
+            ))}
+            <div style={s.modalBtns}>
+              <button style={s.modalCancel} onClick={() => setShowConfirm(false)}>Cancel</button>
+              <button style={s.modalConfirm} onClick={executeSend}>Confirm & Send →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Receipt Modal ── */}
+      {showReceipt && (
+        <div style={s.receiptBox}>
+          <div style={s.receiptCard}>
+            <div style={s.receiptTitle}>✅</div>
+            <div style={s.receiptSub}>Payment Sent Successfully</div>
+            <div style={s.receiptAmount}>{showReceipt.amount}</div>
+            <div style={s.receiptToken}>{showReceipt.token} via Arc Testnet</div>
+            {[
+              ["From", `${showReceipt.from}.noma`],
+              ["To", `${showReceipt.to}.noma`],
+              ["Fee paid", `${showReceipt.fee} ${showReceipt.token}`],
+              ["Corridor", showReceipt.corridor || "Global"],
+              ["Settled", fmtTime(showReceipt.time)],
+              ["Finality", "< 1 second"],
+            ].map(([k,v]) => (
+              <div key={k} style={s.receiptRow}><span style={s.receiptKey}>{k}</span><span>{v}</span></div>
+            ))}
+            <a href={`https://testnet.arcscan.app/tx/${showReceipt.hash}`} target="_blank" rel="noreferrer" style={s.receiptHash}>
+              View on Arc Explorer: {showReceipt.hash?.slice(0,20)}…↗
+            </a>
+            <div style={s.receiptBtns}>
+              <button style={{...s.modalCancel, flex:1}} onClick={() => setShowReceipt(null)}>Close</button>
+              <button style={{...s.modalConfirm, flex:1}} onClick={() => {
+                navigator.clipboard.writeText(`Payment of ${showReceipt.amount} ${showReceipt.token} sent to ${showReceipt.to}.noma via NomaPay on Arc. Tx: ${showReceipt.hash}`);
+                showToast("Receipt copied!");
+              }}>Copy Receipt</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <header style={s.header}>
         <div style={s.logo}>
@@ -430,11 +537,7 @@ export default function NomaPay() {
               <div style={s.bellBtn} onClick={() => {
                 setShowNotif(v => !v);
                 setUnreadCount(0);
-                setTxHistory(prev => {
-                  const u = prev.map(t => ({...t, unread:false}));
-                  saveTxs(tagRef.current, u);
-                  return u;
-                });
+                setTxHistory(prev => { const u = prev.map(t=>({...t,unread:false})); saveHistory(tagRef.current,u); return u; });
               }}>
                 🔔
                 {unreadCount > 0 && <div style={s.badge}>{unreadCount > 9 ? "9+" : unreadCount}</div>}
@@ -443,9 +546,7 @@ export default function NomaPay() {
                 <div style={s.notifPanel}>
                   <div style={s.notifHeader}>
                     <span style={s.notifTitle}>Transaction History</span>
-                    <button style={s.notifClear} onClick={() => {
-                      setTxHistory([]); wipeTxs(tagRef.current); setShowNotif(false);
-                    }}>Clear all</button>
+                    <button style={s.notifClear} onClick={() => { setTxHistory([]); clearHistory(tagRef.current); setShowNotif(false); }}>Clear all</button>
                   </div>
                   <div style={s.notifList}>
                     {txHistory.length === 0
@@ -482,36 +583,46 @@ export default function NomaPay() {
         )}
       </header>
 
-      {/* CONNECT */}
+      {/* ── CONNECT ── */}
       {step==="connect" && (
         <div style={s.center}>
           <div style={s.card}>
             <div style={s.logoIcon}>◈</div>
             <h1 style={s.title}>NomaPay</h1>
-            <p style={{...s.sub, fontSize:12, color:C.accent, letterSpacing:"0.06em", marginBottom:6}}>WELCOME TO NOMAPAY</p>
-            <p style={s.sub}>A cross-border payment platform built on Arc Testnet. Send USDC & EURC globally using just a .noma tag — no addresses, no friction, just payments.</p>
+            <p style={{...s.sub, fontSize:12, color:C.accent, letterSpacing:"0.06em", marginBottom:6}}>CROSS-BORDER PAYMENTS ON ARC</p>
+            <p style={s.sub}>Send USDC & EURC globally using just a .noma tag. Instant settlement, transparent fees, built on Arc Testnet by Circle.</p>
             <div style={{display:"flex", gap:6, justifyContent:"center", flexWrap:"wrap", marginBottom:18}}>
-              {["⚡ Instant","🌍 Cross-border","🔒 On-chain","💵 USDC & EURC"].map(t => (
+              {["⚡ < 1s Settlement","🌍 UAE → Global","🔒 USDC Native","💱 Built-in FX"].map(t => (
                 <span key={t} style={{fontSize:10, background:"rgba(0,229,160,0.08)", border:"1px solid rgba(0,229,160,0.2)", color:C.accent, padding:"3px 9px", borderRadius:20}}>{t}</span>
               ))}
             </div>
             <div style={s.features}>
-              {[["◆","Username-based payments"],["◆","USDC & EURC support"],["◆","Built-in token swap"],["◆","Arc Testnet native"],["◆","0.5% fee per send"]].map(([i,f])=>(
+              {[
+                ["◆","Username-based remittances (.noma tags)"],
+                ["◆","USDC & EURC — Circle regulated stablecoins"],
+                ["◆","Sub-second finality on Arc L1"],
+                ["◆","Transparent fees before every send"],
+                ["◆","Built-in USDC ↔ EURC FX swap"],
+                ["◆","Shareable payment links"],
+              ].map(([i,f])=>(
                 <div key={f} style={s.feat}><span style={s.featIcon}>{i}</span>{f}</div>
               ))}
             </div>
             <button style={s.btnPrimary} onClick={connectWallet}>Connect Wallet →</button>
+            <div style={{marginTop:14, textAlign:"center", fontSize:10, color:C.muted}}>
+              Powered by <span style={{color:C.accent}}>USDC</span> on <span style={{color:C.accent2}}>Arc Testnet</span> by Circle
+            </div>
           </div>
         </div>
       )}
 
-      {/* REGISTER */}
+      {/* ── REGISTER ── */}
       {step==="register" && (
         <div style={s.center}>
           <div style={s.card}>
             <div style={s.stepBadge}>NEW ACCOUNT</div>
             <h2 style={s.cardTitle}>Pick your .noma tag</h2>
-            <p style={s.cardSub}>This is permanent and tied to your wallet. People send you money using yourname.noma</p>
+            <p style={s.cardSub}>Your permanent payment identity on Arc. Anyone can send you USDC or EURC using yourname.noma</p>
             <div style={s.inputWrap}>
               <span style={s.atSign}>@</span>
               <input style={s.input} placeholder="yourname" value={regInput}
@@ -519,7 +630,7 @@ export default function NomaPay() {
                 onKeyDown={e=>e.key==="Enter"&&registerUsername()} maxLength={20}/>
               <span style={s.nomaTag}>.noma</span>
             </div>
-            {regInput && <div style={s.previewTag}>Your tag: <strong>{regInput}.noma</strong></div>}
+            {regInput && <div style={s.previewTag}>Your payment tag: <strong>{regInput}.noma</strong></div>}
             <div style={s.feeBox}><span>Registration fee</span><span style={s.feeAmt}>0.50 USDC</span></div>
             {regStatus && <div style={{...s.statusMsg, color:regStatus.type==="error"?C.error:"#80d0a0"}}>{regStatus.msg}</div>}
             <button style={{...s.btnPrimary, opacity:regLoading?0.6:1}} onClick={registerUsername} disabled={regLoading}>
@@ -530,9 +641,16 @@ export default function NomaPay() {
         </div>
       )}
 
-      {/* APP */}
+      {/* ── APP ── */}
       {step==="app" && (
         <div style={s.appWrap}>
+          {/* Pay link banner */}
+          {payLinkTag && (
+            <div style={{background:"rgba(0,153,255,0.08)", border:`1px solid rgba(0,153,255,0.25)`, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:12, color:C.accent2}}>
+              💳 Payment request from <strong>{payLinkTag}.noma</strong> — fill in amount below to send
+            </div>
+          )}
+
           <div style={s.userBar}>
             <div>
               <div style={s.userHandle}>{username}.noma</div>
@@ -554,16 +672,30 @@ export default function NomaPay() {
             ))}
           </div>
 
+          {/* ── SEND TAB ── */}
           {tab==="send" && (
             <div style={s.panel}>
-              <h3 style={s.panelTitle}>Send to .noma tag</h3>
-              <p style={s.panelSub}>Send to any NomaPay user instantly</p>
-              <label style={s.label}>Recipient</label>
+              <h3 style={s.panelTitle}>Send Remittance</h3>
+              <p style={s.panelSub}>Instant USDC/EURC transfer · Transparent fees · Sub-second settlement</p>
+
+              {/* Corridor selector */}
+              <label style={s.label}>Remittance Corridor</label>
+              <div style={s.corridorBadge}>
+                <span style={s.corridorLabel}>Route:</span>
+                <select style={s.select} value={corridor.code} onChange={e => setCorridor(CORRIDORS.find(c=>c.code===e.target.value))}>
+                  {CORRIDORS.map(c => (
+                    <option key={c.code} value={c.code} style={{background:C.card}}>{c.from} → {c.to}</option>
+                  ))}
+                </select>
+              </div>
+
+              <label style={s.label}>Recipient .noma Tag</label>
               <div style={s.inputWrap}>
                 <span style={s.atSign}>@</span>
                 <input style={s.input} placeholder="nomatag" value={sendTo} onChange={e=>setSendTo(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g,""))}/>
                 <span style={s.nomaTag}>.noma</span>
               </div>
+
               <label style={s.label}>Token</label>
               <div style={s.tokenToggle}>
                 {["USDC","EURC"].map(t=>(
@@ -572,25 +704,46 @@ export default function NomaPay() {
                   </button>
                 ))}
               </div>
+
               <label style={s.label}>Amount</label>
               <div style={s.amtWrap}>
                 <input style={{...s.input,...s.amtInput}} placeholder="0.00" type="number" min="0" value={sendAmount} onChange={e=>setSendAmount(e.target.value)}/>
                 <span style={s.amtToken}>{sendToken}</span>
               </div>
-              {sendFeePreview && <>
-                <div style={s.feeRow}><span>Fee (0.5%)</span><span>−{sendFeePreview} {sendToken}</span></div>
-                <div style={{...s.feeRow,...s.feeRowNet}}><span>Recipient gets</span><span>{(parseFloat(sendAmount)-parseFloat(sendFeePreview)).toFixed(4)} {sendToken}</span></div>
-              </>}
-              <button style={{...s.btnPrimary,marginTop:16,opacity:sendStatus==="pending"?0.6:1}} onClick={sendTokens} disabled={sendStatus==="pending"}>
-                {sendStatus==="pending"?"Sending…":sendStatus==="done"?"✓ Sent!":`Send ${sendToken}`}
+
+              {/* Fee breakdown */}
+              {sendAmount && parseFloat(sendAmount) > 0 && (
+                <div style={{background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"12px 14px", marginBottom:12}}>
+                  <div style={{fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8}}>Fee Breakdown</div>
+                  <div style={s.feeRow}><span>Amount sent</span><span>{sendAmount} {sendToken}</span></div>
+                  <div style={s.feeRow}><span>NomaPay fee (0.5%)</span><span style={{color:C.error}}>−{sendFee} {sendToken}</span></div>
+                  <div style={s.feeRow}><span>Arc gas fee</span><span style={{color:C.accent}}>~0.00 USDC</span></div>
+                  <div style={{...s.feeRow,...s.feeRowNet, marginTop:6, paddingTop:6, borderTop:`1px solid ${C.border}`}}>
+                    <span>Recipient receives</span><span style={{color:C.accent}}>{sendNet} {sendToken}</span>
+                  </div>
+                  <div style={s.feeRow}><span>Settlement time</span><span style={{color:C.accent}}>{"< 1 second"}</span></div>
+                  <div style={s.feeRow}><span>Settlement rail</span><span>USDC on Arc</span></div>
+                </div>
+              )}
+
+              <button
+                style={{...s.btnPrimary, opacity:(!sendTo||!sendAmount||sendStatus==="pending")?0.5:1}}
+                onClick={() => {
+                  if (!sendTo || !sendAmount || parseFloat(sendAmount)<=0) { showToast("Enter recipient and amount","error"); return; }
+                  setShowConfirm(true);
+                }}
+                disabled={!sendTo||!sendAmount||sendStatus==="pending"}
+              >
+                {sendStatus==="pending"?"Sending…":sendStatus==="done"?"✓ Sent!":"Review & Send →"}
               </button>
             </div>
           )}
 
+          {/* ── SWAP TAB ── */}
           {tab==="swap" && (
             <div style={s.panel}>
-              <h3 style={s.panelTitle}>Swap tokens</h3>
-              <p style={s.panelSub}>1:1 rate · 0.2% fee</p>
+              <h3 style={s.panelTitle}>FX Swap</h3>
+              <p style={s.panelSub}>USDC ↔ EURC · 1:1 rate · 0.2% fee · Instant on Arc</p>
               <div style={s.swapBox}>
                 <div style={s.swapSide}>
                   <div style={s.swapLabel}>You pay</div>
@@ -604,14 +757,21 @@ export default function NomaPay() {
                   <div style={s.swapOutput}>{swapNetPreview||"0.00"}</div>
                 </div>
               </div>
-              {swapFeePreview && <div style={s.feeRow}><span>Fee (0.2%)</span><span>−{swapFeePreview} {swapFrom}</span></div>}
-              <button style={{...s.btnPrimary,marginTop:16,opacity:swapStatus==="pending"?0.6:1}} onClick={swapTokens} disabled={swapStatus==="pending"}>
+              {swapFeePreview && (
+                <div style={{background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:8, padding:"10px 12px", marginBottom:12}}>
+                  <div style={s.feeRow}><span>Swap fee (0.2%)</span><span style={{color:C.error}}>−{swapFeePreview} {swapFrom}</span></div>
+                  <div style={s.feeRow}><span>You receive</span><span style={{color:C.accent}}>{swapNetPreview} {swapTo}</span></div>
+                  <div style={s.feeRow}><span>Settlement</span><span style={{color:C.accent}}>{"< 1 second"}</span></div>
+                </div>
+              )}
+              <button style={{...s.btnPrimary, opacity:swapStatus==="pending"?0.6:1}} onClick={swapTokens} disabled={swapStatus==="pending"}>
                 {swapStatus==="pending"?"Swapping…":swapStatus==="done"?"✓ Done!":`Swap ${swapFrom} → ${swapTo}`}
               </button>
-              <div style={s.swapNote}>💡 Don't have EURC? Swap USDC → EURC here, then send to any .noma tag.</div>
+              <div style={s.swapNote}>💡 Need EURC? Swap USDC → EURC here, then send to any .noma tag globally.</div>
             </div>
           )}
 
+          {/* ── PROFILE TAB ── */}
           {tab==="profile" && (
             <div style={s.panel}>
               <h3 style={s.panelTitle}>Your profile</h3>
@@ -620,9 +780,27 @@ export default function NomaPay() {
                 <div style={s.profileName}>{username}.noma</div>
                 <div style={s.profileAddr}>{account}</div>
               </div>
-              {[["Network","Arc Testnet"],["Noma Tag",`${username}.noma`],["Address",short(account)],["USDC Balance",`${usdcBal} USDC`],["EURC Balance",`${eurcBal} EURC`]].map(([k,v])=>(
+              {[
+                ["Network","Arc Testnet (Circle)"],
+                ["Noma Tag",`${username}.noma`],
+                ["Address",short(account)],
+                ["USDC Balance",`${usdcBal} USDC`],
+                ["EURC Balance",`${eurcBal} EURC`],
+                ["Send Fee","0.5% per transfer"],
+                ["Settlement","< 1 second on Arc"],
+              ].map(([k,v])=>(
                 <div key={k} style={s.infoRow}><span style={s.infoKey}>{k}</span><span>{v}</span></div>
               ))}
+
+              {/* Shareable payment link */}
+              <div style={s.payLinkBox}>
+                <div style={s.payLinkLabel}>Your Payment Link</div>
+                <div style={s.payLinkUrl}>{payLink}</div>
+                <button style={s.copyBtn} onClick={() => { navigator.clipboard.writeText(payLink); showToast("Payment link copied!"); }}>
+                  Copy Link
+                </button>
+              </div>
+
               <div style={s.contractBox}>
                 <div style={s.contractLabel}>Contract Address</div>
                 <div style={s.contractAddr}>{NOMAPAY_CONTRACT}</div>
@@ -632,7 +810,9 @@ export default function NomaPay() {
         </div>
       )}
 
-      <footer style={s.footer}>NomaPay · Arc Testnet · v1.0</footer>
+      <footer style={s.footer}>
+        NomaPay · Built on Arc Testnet by Circle · USDC powered · Track 1 — Cross-Border Payments
+      </footer>
     </div>
   );
 }
