@@ -6,6 +6,11 @@ export default async function handler(req, res) {
 
   const CIRCLE_API_KEY = process.env.CIRCLE_API_KEY;
 
+  // Debug — check if key is being read
+  if (!CIRCLE_API_KEY) {
+    return res.status(500).json({ error: "CIRCLE_API_KEY is not set in environment" });
+  }
+
   try {
     const response = await fetch("https://api.circle.com/v1/configuration", {
       method: "GET",
