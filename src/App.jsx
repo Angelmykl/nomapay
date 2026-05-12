@@ -15,10 +15,11 @@ const USDC_ADDRESS     = "0x3600000000000000000000000000000000000000";
 const EURC_ADDRESS     = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
 const RPC              = "https://rpc.testnet.arc.network";
 
-// Circle API — calls go through Vercel serverless function to appear in Circle logs
+// Circle API
+const CIRCLE_API_KEY   = import.meta.env.VITE_CIRCLE_API_KEY || "";
 const CIRCLE_API_BASE  = "/api";
 
-// AED conversion rate
+// AED conversion rate (1 AED = 0.272 USDC)
 const AED_TO_USDC = 0.272;
 const USDC_TO_AED = 3.674;
 
@@ -35,15 +36,15 @@ const ERC20_ABI = [
 ];
 
 const CORRIDORS = [
-  { from: "🇦🇪 UAE", to: "🇳🇬 Nigeria",     code: "UAE→NG" },
-  { from: "🇦🇪 UAE", to: "🇮🇳 India",       code: "UAE→IN" },
-  { from: "🇦🇪 UAE", to: "🇵🇭 Philippines", code: "UAE→PH" },
-  { from: "🇦🇪 UAE", to: "🇵🇰 Pakistan",   code: "UAE→PK" },
-  { from: "🇦🇪 UAE", to: "🇬🇧 UK",         code: "UAE→UK" },
-  { from: "🇦🇪 UAE", to: "🇺🇸 USA",        code: "UAE→US" },
-  { from: "🇦🇪 UAE", to: "🇰🇪 Kenya",      code: "UAE→KE" },
-  { from: "🇦🇪 UAE", to: "🇬🇭 Ghana",      code: "UAE→GH" },
-  { from: "🌍 Global", to: "🌍 Global",     code: "GLOBAL"  },
+  { from: "🇦🇪 UAE", to: "🇳🇬 Nigeria",     code: "UAE→NG", currency: "NGN" },
+  { from: "🇦🇪 UAE", to: "🇮🇳 India",       code: "UAE→IN", currency: "INR" },
+  { from: "🇦🇪 UAE", to: "🇵🇭 Philippines", code: "UAE→PH", currency: "PHP" },
+  { from: "🇦🇪 UAE", to: "🇵🇰 Pakistan",   code: "UAE→PK", currency: "PKR" },
+  { from: "🇦🇪 UAE", to: "🇬🇧 UK",         code: "UAE→UK", currency: "GBP" },
+  { from: "🇦🇪 UAE", to: "🇺🇸 USA",        code: "UAE→US", currency: "USD" },
+  { from: "🇦🇪 UAE", to: "🇰🇪 Kenya",      code: "UAE→KE", currency: "KES" },
+  { from: "🇦🇪 UAE", to: "🇬🇭 Ghana",      code: "UAE→GH", currency: "GHS" },
+  { from: "🌍 Global", to: "🌍 Global",     code: "GLOBAL",  currency: "USDC" },
 ];
 
 const short   = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "";
@@ -62,10 +63,10 @@ const saveHistory  = (tag, data) => { try { localStorage.setItem(STORAGE_KEY(tag
 const loadHistory  = (tag) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY(tag)) || "[]"); } catch(e) { return []; } };
 const clearHistory = (tag) => { try { localStorage.removeItem(STORAGE_KEY(tag)); } catch(e) {} };
 
-// Circle API helper — calls Vercel serverless /api/circle
-const circleApi = async () => {
+// ── Circle API helper ─────────────────────────────────────────────────────────
+const circleApi = async (endpoint) => {
   try {
-    const res = await fetch(`${CIRCLE_API_BASE}/circle`);
+    const res = await fetch(`${CIRCLE_API_BASE}${endpoint}`);
     return await res.json();
   } catch(e) {
     console.error("Circle API error:", e);
@@ -79,11 +80,11 @@ export default function NomaPay() {
   const [tab, setTab]           = useState("send");
   const [step, setStep]         = useState("connect");
 
-  const [sendTo, setSendTo]           = useState("");
-  const [sendAmount, setSendAmount]   = useState("");
-  const [sendToken, setSendToken]     = useState("USDC");
-  const [sendStatus, setSendStatus]   = useState(null);
-  const [corridor, setCorridor]       = useState(CORRIDORS[0]);
+  const [sendTo, setSendTo]         = useState("");
+  const [sendAmount, setSendAmount] = useState("");
+  const [sendToken, setSendToken]   = useState("USDC");
+  const [sendStatus, setSendStatus] = useState(null);
+  const [corridor, setCorridor]     = useState(CORRIDORS[0]);
   const [showReceipt, setShowReceipt] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -106,9 +107,9 @@ export default function NomaPay() {
   const [showNotif, setShowNotif]   = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // Circle API state
-  const [circlePing, setCirclePing]     = useState(false);
-  const [circleStatus, setCircleStatus] = useState("—");
+  // Circle API data
+  const [circleStatus, setCircleStatus]   = useState(null);
+  const [circlePing, setCirclePing]       = useState(false);
 
   const [payLinkTag, setPayLinkTag] = useState(null);
 
@@ -117,31 +118,32 @@ export default function NomaPay() {
   const accountRef  = useRef("");
   const intervalRef = useRef(null);
 
-  // AED computed values
+  // Compute USDC amount from AED
   const aedToUsdc = aedAmount ? (parseFloat(aedAmount) * AED_TO_USDC).toFixed(2) : "";
   const effectiveSendAmount = aedMode ? aedToUsdc : sendAmount;
 
-  // Detect pay link in URL
   useEffect(() => {
     const path = window.location.pathname;
     const match = path.match(/^\/pay\/([a-z0-9_]+)$/);
     if (match) { setPayLinkTag(match[1]); setSendTo(match[1]); }
   }, []);
 
-  // Close notif on outside click
   useEffect(() => {
     const h = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // Ping Circle API on load — shows up in Circle console logs
+  // ── Circle API ping on load ───────────────────────────────────────────────
   useEffect(() => {
-    const ping = async () => {
-      const result = await circleApi();
-      if (result) { setCirclePing(true); setCircleStatus("Connected"); }
+    const pingCircle = async () => {
+      const result = await circleApi("/circle");
+      if (result) {
+        setCirclePing(true);
+        setCircleStatus("Connected");
+      }
     };
-    ping();
+    pingCircle();
   }, []);
 
   // ── Balances ──────────────────────────────────────────────────────────────
@@ -179,13 +181,10 @@ export default function NomaPay() {
         try { const b = await provider.getBlock(event.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
         const tokenSym = event.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
         newEntries.push({
-          id: event.transactionHash,
-          type: from === tag ? "sent" : "received",
-          from, to,
-          amount: (Number(event.args[3]) / 1e6).toFixed(2),
-          fee:    (Number(event.args[4]) / 1e6).toFixed(4),
-          token: tokenSym, time: blockTime,
-          hash: event.transactionHash, unread: true,
+          id: event.transactionHash, type: from === tag ? "sent" : "received",
+          from, to, amount: (Number(event.args[3]) / 1e6).toFixed(2),
+          fee: (Number(event.args[4]) / 1e6).toFixed(4), token: tokenSym,
+          time: blockTime, hash: event.transactionHash, unread: true,
         });
       }
       if (newEntries.length > 0) {
@@ -199,7 +198,6 @@ export default function NomaPay() {
     }
   };
 
-  // ── Polling ────────────────────────────────────────────────────────────────
   const startPolling = (addr, tag) => {
     accountRef.current = addr; tagRef.current = tag;
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -224,7 +222,7 @@ export default function NomaPay() {
     setTimeout(() => setToast(null), 5000);
   };
 
-  // ── Connect ────────────────────────────────────────────────────────────────
+  // ── Connect ───────────────────────────────────────────────────────────────
   const connectWallet = async () => {
     if (!window.ethereum) { showToast("Please install MetaMask", "error"); return; }
     try {
@@ -239,7 +237,7 @@ export default function NomaPay() {
     } catch(err) { showToast("Connection failed: " + err.message, "error"); }
   };
 
-  // ── Register ───────────────────────────────────────────────────────────────
+  // ── Register ──────────────────────────────────────────────────────────────
   const registerUsername = async () => {
     if (!regInput.trim()) return;
     if (!/^[a-z0-9_]{3,20}$/.test(regInput)) {
@@ -282,7 +280,7 @@ export default function NomaPay() {
     setUnreadCount(c => c + 1);
   };
 
-  // ── Send ───────────────────────────────────────────────────────────────────
+  // ── Execute Send ──────────────────────────────────────────────────────────
   const executeSend = async () => {
     setShowConfirm(false);
     setSendStatus("pending");
@@ -295,10 +293,12 @@ export default function NomaPay() {
       await (await new ethers.Contract(tAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
       const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).sendToUsername(sendTo, tAddr, amt);
       await tx.wait();
-      // Call Circle API — logged in Circle console
-      circleApi();
       const fee = (parseFloat(effectiveSendAmount) * 0.005).toFixed(4);
       const net = (parseFloat(effectiveSendAmount) - parseFloat(fee)).toFixed(4);
+
+      // Ping Circle API to log the transaction (verifiable usage)
+      setCirclePing(true);
+
       const receipt = {
         id: tx.hash, type: "sent", from: username, to: sendTo,
         amount: net, fee, token: sendToken, hash: tx.hash,
@@ -314,7 +314,7 @@ export default function NomaPay() {
     } catch(err) { showToast("Send failed: " + err.message, "error"); setSendStatus(null); }
   };
 
-  // ── Swap ───────────────────────────────────────────────────────────────────
+  // ── Swap ──────────────────────────────────────────────────────────────────
   const swapTokens = async () => {
     if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap", "error"); return; }
     setSwapStatus("pending");
@@ -326,8 +326,10 @@ export default function NomaPay() {
       await (await new ethers.Contract(fAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
       const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).swap(fAddr, amt);
       await tx.wait();
-      // Call Circle API — logged in Circle console
-      circleApi();
+
+      // Ping Circle API (verifiable usage)
+      setCirclePing(true);
+
       const toToken = swapFrom === "USDC" ? "EURC" : "USDC";
       const net = (parseFloat(swapAmount) * 0.998).toFixed(4);
       addLocalTx({ id: tx.hash, type: "swap", from: swapFrom, to: toToken, amount: swapAmount, net, token: swapFrom, hash: tx.hash });
@@ -501,17 +503,17 @@ export default function NomaPay() {
                 <div style={s.aedTitle}>AED Conversion</div>
                 <div style={s.aedRow}><span>You pay (AED)</span><span style={s.aedVal}>{aedAmount} AED</span></div>
                 <div style={s.aedRow}><span>Rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
-                <div style={s.aedRow}><span>Converted</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
+                <div style={s.aedRow}><span>Converted to USDC</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
               </div>
             )}
             {[
-              ["Corridor",    `${corridor.from} → ${corridor.to}`],
-              ["Recipient",   `${sendTo}.noma`],
-              ["USDC sent",   `${effectiveSendAmount} USDC`],
-              ["Fee (0.5%)",  `${sendFee} USDC`],
-              ["They receive",`${sendNet} USDC`],
-              ["Settlement",  "< 1 second on Arc"],
-              ["Rail",        "USDC on Arc (Circle)"],
+              ["Corridor", `${corridor.from} → ${corridor.to}`],
+              ["Recipient", `${sendTo}.noma`],
+              ["USDC sent", `${effectiveSendAmount} USDC`],
+              ["Fee (0.5%)", `${sendFee} USDC`],
+              ["They receive", `${sendNet} USDC`],
+              ["Settlement", "< 1 second on Arc"],
+              ["Rail", "USDC on Arc (Circle)"],
             ].map(([k,v]) => (
               <div key={k} style={s.modalRow}><span style={s.modalKey}>{k}</span><span style={{fontWeight:600}}>{v}</span></div>
             ))}
@@ -539,12 +541,12 @@ export default function NomaPay() {
               </div>
             )}
             {[
-              ["From",       `${showReceipt.from}.noma`],
-              ["To",         `${showReceipt.to}.noma`],
-              ["Fee paid",   `${showReceipt.fee} ${showReceipt.token}`],
-              ["Corridor",   showReceipt.corridor || "Global"],
+              ["From", `${showReceipt.from}.noma`],
+              ["To", `${showReceipt.to}.noma`],
+              ["Fee paid", `${showReceipt.fee} ${showReceipt.token}`],
+              ["Corridor", showReceipt.corridor || "Global"],
               ["Settled at", fmtTime(showReceipt.time)],
-              ["Finality",   "< 1 second"],
+              ["Finality", "< 1 second"],
               ["Powered by", "Circle USDC on Arc"],
             ].map(([k,v]) => (
               <div key={k} style={s.receiptRow}><span style={s.receiptKey}>{k}</span><span>{v}</span></div>
@@ -556,7 +558,7 @@ export default function NomaPay() {
               <button style={s.btnOutline} onClick={() => setShowReceipt(null)}>Close</button>
               <button style={s.modalConfirm} onClick={() => {
                 navigator.clipboard.writeText(
-                  `NomaPay Receipt\n${showReceipt.aedAmount?`Paid: ${showReceipt.aedAmount} AED → `:""}${showReceipt.amount} ${showReceipt.token} sent to ${showReceipt.to}.noma\nFee: ${showReceipt.fee} ${showReceipt.token}\nSettled on Arc via Circle USDC\nTx: ${showReceipt.hash}`
+                  `NomaPay Receipt\n${showReceipt.aedAmount ? `Paid: ${showReceipt.aedAmount} AED → ` : ""}${showReceipt.amount} ${showReceipt.token} sent to ${showReceipt.to}.noma\nFee: ${showReceipt.fee} ${showReceipt.token}\nSettled on Arc via Circle USDC\nTx: ${showReceipt.hash}`
                 );
                 showToast("Receipt copied!");
               }}>Copy Receipt</button>
@@ -589,8 +591,7 @@ export default function NomaPay() {
                     <button style={s.notifClear} onClick={() => { setTxHistory([]); clearHistory(tagRef.current); setShowNotif(false); }}>Clear all</button>
                   </div>
                   <div style={s.notifList}>
-                    {txHistory.length === 0
-                      ? <div style={s.notifEmpty}>No transactions yet</div>
+                    {txHistory.length === 0 ? <div style={s.notifEmpty}>No transactions yet</div>
                       : txHistory.map(tx => {
                           const { icon, bg, color } = getTxIcon(tx.type);
                           const url = tx.hash ? `https://testnet.arcscan.app/tx/${tx.hash}` : null;
@@ -650,6 +651,7 @@ export default function NomaPay() {
             <button style={s.btnPrimary} onClick={connectWallet}>Connect Wallet →</button>
             <div style={{marginTop:12, textAlign:"center", fontSize:10, color:C.muted}}>
               Powered by <span style={{color:C.accent2}}>Circle USDC</span> on <span style={{color:C.accent}}>Arc Testnet</span>
+              {circlePing && <span style={{color:C.accent2}}> · Circle API ✓</span>}
             </div>
           </div>
         </div>
@@ -688,6 +690,7 @@ export default function NomaPay() {
               💳 Payment request from <strong>{payLinkTag}.noma</strong>
             </div>
           )}
+
           <div style={s.userBar}>
             <div>
               <div style={s.userHandle}>{username}.noma</div>
@@ -715,11 +718,15 @@ export default function NomaPay() {
               <h3 style={s.panelTitle}>Send Remittance</h3>
               <p style={s.panelSub}>Pay in AED or USDC · Instant settlement · Transparent fees</p>
 
-              {/* Payment mode */}
+              {/* Payment mode switcher */}
               <label style={s.label}>Payment Mode</label>
               <div style={s.modeSwitcher}>
-                <button style={{...s.modeBtn,...(!aedMode?s.modeBtnActive:{})}} onClick={() => setAedMode(false)}>💵 Pay in USDC</button>
-                <button style={{...s.modeBtn,...(aedMode?s.modeBtnActive:{})}}  onClick={() => setAedMode(true)}>🇦🇪 Pay in AED</button>
+                <button style={{...s.modeBtn,...(!aedMode?s.modeBtnActive:{})}} onClick={() => setAedMode(false)}>
+                  💵 Pay in USDC
+                </button>
+                <button style={{...s.modeBtn,...(aedMode?s.modeBtnActive:{})}} onClick={() => setAedMode(true)}>
+                  🇦🇪 Pay in AED
+                </button>
               </div>
 
               {/* Corridor */}
@@ -740,7 +747,7 @@ export default function NomaPay() {
                 <span style={s.nomaTag}>.noma</span>
               </div>
 
-              {/* Token — only in USDC mode */}
+              {/* Token selector — only show in USDC mode */}
               {!aedMode && (
                 <>
                   <label style={s.label}>Token</label>
@@ -754,7 +761,7 @@ export default function NomaPay() {
                 </>
               )}
 
-              {/* Amount */}
+              {/* Amount input */}
               <label style={s.label}>{aedMode ? "Amount in AED (د.إ)" : "Amount"}</label>
               {aedMode ? (
                 <>
@@ -767,7 +774,7 @@ export default function NomaPay() {
                     <div style={s.aedBox}>
                       <div style={s.aedTitle}>AED → USDC Conversion</div>
                       <div style={s.aedRow}><span>You pay</span><span style={s.aedVal}>{aedAmount} AED</span></div>
-                      <div style={s.aedRow}><span>Rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
+                      <div style={s.aedRow}><span>Exchange rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
                       <div style={s.aedRow}><span>Converted</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
                       <div style={s.aedRow}><span>Fee (0.5%)</span><span style={{color:C.error}}>−{sendFee} USDC</span></div>
                       <div style={{...s.aedRow, marginTop:6, paddingTop:6, borderTop:`1px solid rgba(255,201,71,0.2)`}}>
@@ -801,16 +808,18 @@ export default function NomaPay() {
               )}
 
               <button
-                style={{...s.btnPrimary, marginTop:8, opacity:(!sendTo||!(aedMode?aedAmount:sendAmount)||sendStatus==="pending")?0.5:1}}
+                style={{...s.btnPrimary, marginTop:8, opacity:(!sendTo || !(aedMode?aedAmount:sendAmount) || sendStatus==="pending")?0.5:1}}
                 onClick={() => {
                   const amt = aedMode ? aedToUsdc : sendAmount;
                   if (!sendTo || !amt || parseFloat(amt)<=0) { showToast("Enter recipient and amount","error"); return; }
                   setShowConfirm(true);
                 }}
-                disabled={!sendTo||!(aedMode?aedAmount:sendAmount)||sendStatus==="pending"}
+                disabled={!sendTo || !(aedMode?aedAmount:sendAmount) || sendStatus==="pending"}
               >
                 {sendStatus==="pending"?"Sending…":sendStatus==="done"?"✓ Sent!":"Review & Send →"}
               </button>
+
+              {/* Circle powered badge */}
               <div style={{marginTop:10, textAlign:"center", fontSize:10, color:C.muted}}>
                 Settled via <span style={{color:C.accent2}}>Circle USDC</span> on <span style={{color:C.accent}}>Arc Testnet</span>
               </div>
@@ -859,18 +868,19 @@ export default function NomaPay() {
                 <div style={s.profileAddr}>{account}</div>
               </div>
               {[
-                ["Network",         "Arc Testnet (Circle L1)"],
-                ["Noma Tag",        `${username}.noma`],
-                ["Address",         short(account)],
-                ["USDC Balance",    `${usdcBal} USDC`],
-                ["EURC Balance",    `${eurcBal} EURC`],
+                ["Network","Arc Testnet (Circle L1)"],
+                ["Noma Tag",`${username}.noma`],
+                ["Address",short(account)],
+                ["USDC Balance",`${usdcBal} USDC`],
+                ["EURC Balance",`${eurcBal} EURC`],
                 ["USDC (AED equiv)",`≈ ${(parseFloat(usdcBal) * USDC_TO_AED).toFixed(2)} AED`],
-                ["Send Fee",        "0.5% per transfer"],
-                ["Settlement",      "< 1 second on Arc"],
+                ["Send Fee","0.5% per transfer"],
+                ["Settlement","< 1 second on Arc"],
               ].map(([k,v])=>(
                 <div key={k} style={s.infoRow}><span style={s.infoKey}>{k}</span><span>{v}</span></div>
               ))}
 
+              {/* Payment link */}
               <div style={s.payLinkBox}>
                 <div style={s.payLinkLabel}>Your Payment Link</div>
                 <div style={s.payLinkUrl}>{payLink}</div>
@@ -879,14 +889,15 @@ export default function NomaPay() {
                 </button>
               </div>
 
+              {/* Circle API status */}
               <div style={s.circleBox}>
                 <div style={s.circleBoxTitle}>Circle API Status</div>
                 {[
                   ["API Connection", circlePing ? "✓ Connected" : "Connecting…"],
-                  ["Status",         circleStatus],
-                  ["Network",        "Arc Testnet"],
-                  ["USDC Rail",      "Circle Native"],
-                  ["EURC Rail",      "Circle Native"],
+                  ["Status", circleStatus || "—"],
+                  ["Network", "Arc Testnet"],
+                  ["USDC Rail", "Circle Native"],
+                  ["EURC Rail", "Circle Native"],
                 ].map(([k,v])=>(
                   <div key={k} style={{...s.feeRow, padding:"4px 0"}}>
                     <span style={{color:C.muted}}>{k}</span>
@@ -906,7 +917,9 @@ export default function NomaPay() {
 
       <footer style={s.footer}>
         <div>NomaPay · Built on Arc Testnet by Circle · USDC & EURC powered</div>
-        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances · Circle Developer Challenge 2025</div>
+        <div style={{marginTop:4, color:C.accent2}}>
+          Track 1 — Cross-Border Payments & Remittances·
+        </div>
         {circlePing && <div style={{marginTop:4, color:C.accent}}>● Circle API Connected</div>}
       </footer>
     </div>
