@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch("https://api.circle.com/v1/configuration", {
+    const response = await fetch("https://api.circle.com/v1/ping", {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${CIRCLE_API_KEY}`,
