@@ -1053,7 +1053,7 @@ export default function NomaPay() {
 
       <footer style={s.footer}>
         <div>NomaPay · Built on Arc Testnet by Circle · USDC & EURC powered</div>
-        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances · Circle Developer Challenge 2025</div>
+        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances ·</div>
         {circlePing && <div style={{marginTop:4, color:C.accent}}>● Circle API Connected</div>}
       </footer>
     </div>
