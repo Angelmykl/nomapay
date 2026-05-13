@@ -28,19 +28,19 @@ Built for the **Circle × Arc Stablecoins Commerce Stack Challenge — Track 1: 
 
 ## Features
 
-- 🔌 **Wallet Connection** — Connect MetaMask and auto-switch to Arc Testnet
-- 👤 **.noma Tag Registration** — Register a unique username permanently linked to your wallet (0.50 USDC one-time fee)
-- 🌍 **Multi-Currency Remittance** — Pay in 10+ currencies (AED, NGN, GHS, INR, PHP, PKR, GBP, KES, USD) with live FX rates
+-  **Wallet Connection** — Connect MetaMask and auto-switch to Arc Testnet
+-  **.noma Tag Registration** — Register a unique username permanently linked to your wallet (0.50 USDC one-time fee)
+-  **Multi-Currency Remittance** — Pay in 10+ currencies (AED, NGN, GHS, INR, PHP, PKR, GBP, KES, USD) with live FX rates
 - 🇦🇪 **Pay in AED Mode** — Dedicated AED → USDC conversion flow (1 AED = 0.272 USDC)
-- 💱 **Bidirectional FX** — Flip any corridor (NGN→AED, GHS→USD, INR→GBP etc.)
-- 💸 **Send by .noma Tag** — Send USDC or EURC to any NomaPay user using just their tag
-- 🔄 **Built-in FX Swap** — Swap between USDC and EURC directly in-app (0.2% fee)
-- 🧾 **Payment Receipts** — Full receipt after every send with Arc explorer link and copy button
-- 🔔 **Transaction History** — Persistent history per .noma tag, survives wallet disconnect
-- 🔗 **Shareable Payment Links** — `nomapay.vercel.app/pay/username`
-- ⚡ **Auto Balance Refresh** — Balances update every 30 seconds automatically
-- 🔵 **Circle API** — Integrated and verifiable in Circle developer console
-- 📱 **Responsive UI** — Works on desktop and mobile
+-  **Bidirectional FX** — Flip any corridor (NGN→AED, GHS→USD, INR→GBP etc.)
+-  **Send by .noma Tag** — Send USDC or EURC to any NomaPay user using just their tag
+-  **Built-in FX Swap** — Swap between USDC and EURC directly in-app (0.2% fee)
+-  **Payment Receipts** — Full receipt after every send with Arc explorer link and copy button
+-  **Transaction History** — Persistent history per .noma tag, survives wallet disconnect
+-  **Shareable Payment Links** — `nomapay.vercel.app/pay/username`
+-  **Auto Balance Refresh** — Balances update every 30 seconds automatically
+-  **Circle API** — Integrated and verifiable in Circle developer console
+-  **Responsive UI** — Works on desktop and mobile
 
 ---
 
@@ -116,7 +116,7 @@ Built for the **Circle × Arc Stablecoins Commerce Stack Challenge — Track 1: 
 - Circle's testnet infrastructure (faucets, explorer) made testing smooth
 
 ### What could be improved
-- **Arc chain support in Modular Wallets SDK** — we couldn't use Circle's embedded wallet SDK because Arc isn't yet a supported chain. Adding Arc would unlock email-based onboarding without MetaMask
+- **Arc chain support in Modular Wallets SDK** — I couldn't use Circle's embedded wallet SDK because Arc isn't yet a supported chain. Adding Arc would unlock email-based onboarding without MetaMask
 - **CCTP on Arc** — cross-chain USDC transfer to Arc from Ethereum/Solana would complete the full remittance story
 - **Webhooks for on-chain events** — Circle webhooks that fire on USDC transfers on Arc would make received transaction notifications much more reliable than polling
 
