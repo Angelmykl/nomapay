@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { ethers } from "ethers";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const ARC_TESTNET = {
