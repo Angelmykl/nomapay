@@ -207,11 +207,12 @@ export default function NomaPay() {
   const fetchBalances = async (addr) => {
     if (!addr) return;
     try {
-      const p = new ethers.JsonRpcProvider(RPC);
-      const [u, e] = await Promise.all([
-        new ethers.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
-        new ethers.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
-      ]);
+      const { ethers: eth } = await import("ethers");
+const p = new eth.JsonRpcProvider(RPC);
+const [u, e] = await Promise.all([
+  new eth.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+  new eth.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+]);
       setUsdcBal((Number(u) / 1e6).toFixed(2));
       setEurcBal((Number(e) / 1e6).toFixed(2));
     } catch(e) {}
@@ -221,8 +222,9 @@ export default function NomaPay() {
   const fetchOnChainHistory = async (tag) => {
     if (!tag) return;
     try {
-      const provider = new ethers.JsonRpcProvider(RPC);
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
+      const { ethers: eth } = await import("ethers");
+const provider = new eth.JsonRpcProvider(RPC);
+const contract = new eth.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
       const currentBlock = await provider.getBlockNumber();
       const fromBlock    = Math.max(0, currentBlock - 5000);
 console.log("Events found:", events.length, "for tag:", tag);
