@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { ethers } from "ethers";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const ARC_TESTNET = {
@@ -206,12 +207,11 @@ export default function NomaPay() {
   const fetchBalances = async (addr) => {
     if (!addr) return;
     try {
-      const { ethers: eth } = await import("ethers");
-const p = new eth.JsonRpcProvider(RPC);
-const [u, e] = await Promise.all([
-  new eth.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
-  new eth.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
-]);
+      const p = new ethers.JsonRpcProvider(RPC);
+      const [u, e] = await Promise.all([
+        new ethers.Contract(USDC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+        new ethers.Contract(EURC_ADDRESS, ERC20_ABI, p).balanceOf(addr),
+      ]);
       setUsdcBal((Number(u) / 1e6).toFixed(2));
       setEurcBal((Number(e) / 1e6).toFixed(2));
     } catch(e) {}
@@ -221,12 +221,10 @@ const [u, e] = await Promise.all([
   const fetchOnChainHistory = async (tag) => {
     if (!tag) return;
     try {
-      const { ethers: eth } = await import("ethers");
-const provider = new eth.JsonRpcProvider(RPC);
-const contract = new eth.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
+      const provider = new ethers.JsonRpcProvider(RPC);
+      const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
       const currentBlock = await provider.getBlockNumber();
-      const fromBlock    = Math.max(0, currentBlock - 5000);
-console.log("Events found:", events.length, "for tag:", tag);
+      const fromBlock    = Math.max(0, currentBlock - 50000);
       const events       = await contract.queryFilter(contract.filters.TokenSent(), fromBlock, "latest");
       const existing     = loadHistory(tag);
       const existingIds  = new Set(existing.map(t => t.id));
@@ -252,10 +250,9 @@ console.log("Events found:", events.length, "for tag:", tag);
         setUnreadCount(c => c + newEntries.length);
       } else if (existing.length > 0) { setTxHistory(existing); }
     } catch(err) {
-  console.error("fetchOnChainHistory error:", err);
-  const saved = loadHistory(tag);
-  if (saved.length > 0) setTxHistory(saved);
-}
+      const saved = loadHistory(tag);
+      if (saved.length > 0) setTxHistory(saved);
+    }
   };
 
   const startPolling = (addr, tag) => {
@@ -602,9 +599,9 @@ console.log("Events found:", events.length, "for tag:", tag);
             )}
             {[
               ["Recipient",    `${sendTo}.noma`],
-              ["USDC sent", `${aedMode ? effectiveSendAmount : (fromCurrency.code === "USDC" ? sendAmount : fxUsdcAmount)} USDC`],
+              ["USDC sent",    `${aedMode ? effectiveSendAmount : (fxUsdcAmount || sendAmount)} USDC`],
               ["Fee (0.5%)",   `${sendFee} USDC`],
-              ["They receive", `${aedMode ? sendNet : (fromCurrency.code === "USDC" ? sendNet : fxNet)} USDC`],
+              ["They receive", `${aedMode ? sendNet : fxNet} USDC`],
               ["Settlement",   "< 1 second on Arc"],
               ["Rail",         "USDC on Arc (Circle)"],
             ].map(([k,v]) => (
@@ -1056,7 +1053,7 @@ console.log("Events found:", events.length, "for tag:", tag);
 
       <footer style={s.footer}>
         <div>NomaPay · Built on Arc Testnet by Circle · USDC & EURC powered</div>
-        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances ·</div>
+        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances · Circle Developer Challenge 2025</div>
         {circlePing && <div style={{marginTop:4, color:C.accent}}>● Circle API Connected</div>}
       </footer>
     </div>
