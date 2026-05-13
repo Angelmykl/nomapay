@@ -248,26 +248,31 @@ export default function NomaPay() {
     for (const log of logs.reverse()) {
       if (existingIds.has(log.transactionHash)) continue;
       try {
-        // Decode manually from raw log data
-        const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
-          ["string", "string", "address", "uint256", "uint256"],
-          log.data
-        );
-        const from = decoded[0];
-        const to   = decoded[1];
-        console.log("Decoded:", from, "->", to);
-        if (from !== tag && to !== tag) continue;
-        let blockTime = Date.now();
-        try { const b = await provider.getBlock(log.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
-        const tokenSym = decoded[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
-        newEntries.push({
-          id: log.transactionHash, type: from === tag ? "sent" : "received",
-          from, to,
-          amount: (Number(decoded[3]) / 1e6).toFixed(2),
-          fee:    (Number(decoded[4]) / 1e6).toFixed(4),
-          token: tokenSym, time: blockTime,
-          hash: log.transactionHash, unread: true,
-        });
+        
+        // fromUsername and toUsername are indexed — decode from topics
+const from = ethers.decodeBytes32String(log.topics[1]).replace(/\0/g, '') || 
+  ethers.toUtf8String(ethers.getBytes(log.topics[1])).replace(/\0/g, '');
+const to   = ethers.decodeBytes32String(log.topics[2]).replace(/\0/g, '') || 
+  ethers.toUtf8String(ethers.getBytes(log.topics[2])).replace(/\0/g, '');
+console.log("Decoded from topics:", from, "->", to);
+
+// Decode data: address token, uint256 amount, uint256 fee
+const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+  ["address", "uint256", "uint256"],
+  log.data
+);
+if (from !== tag && to !== tag) continue;
+let blockTime = Date.now();
+try { const b = await provider.getBlock(log.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
+const tokenSym = decoded[0].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+newEntries.push({
+  id: log.transactionHash, type: from === tag ? "sent" : "received",
+  from, to,
+  amount: (Number(decoded[1]) / 1e6).toFixed(2),
+  fee:    (Number(decoded[2]) / 1e6).toFixed(4),
+  token: tokenSym, time: blockTime,
+  hash: log.transactionHash, unread: true,
+});
       } catch(e) { console.log("Decode error:", e.message); continue; }
     }
 
