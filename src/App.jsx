@@ -219,41 +219,64 @@ export default function NomaPay() {
 
   // On-chain history
   const fetchOnChainHistory = async (tag) => {
-    if (!tag) return;
-    try {
-      const provider = new ethers.JsonRpcProvider(RPC);
-      const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
-      const currentBlock = await provider.getBlockNumber();
-      const fromBlock    = Math.max(0, currentBlock - 50000);
-      const events       = await contract.queryFilter(contract.filters.TokenSent(), fromBlock, "latest");
-      const existing     = loadHistory(tag);
-      const existingIds  = new Set(existing.map(t => t.id));
-      const newEntries   = [];
-      for (const event of [...events].reverse()) {
-        if (existingIds.has(event.transactionHash)) continue;
-        const from = event.args[0];
-        const to   = event.args[1];
+  if (!tag) return;
+  try {
+    const provider = new ethers.JsonRpcProvider(RPC);
+    const currentBlock = await provider.getBlockNumber();
+    console.log("Current block:", currentBlock, "tag:", tag);
+    
+    const fromBlock = Math.max(0, currentBlock - 5000);
+    
+    // Use raw getLogs instead of queryFilter
+    const iface = new ethers.Interface([
+      "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
+    ]);
+    const topic = iface.getEvent("TokenSent").topicHash;
+    
+    const logs = await provider.getLogs({
+      address: NOMAPAY_CONTRACT,
+      topics: [topic],
+      fromBlock: fromBlock,
+      toBlock: "latest",
+    });
+    
+    console.log("Raw logs found:", logs.length);
+    
+    const existing    = loadHistory(tag);
+    const existingIds = new Set(existing.map(t => t.id));
+    const newEntries  = [];
+
+    for (const log of logs.reverse()) {
+      if (existingIds.has(log.transactionHash)) continue;
+      try {
+        const parsed = iface.parseLog(log);
+        const from   = parsed.args[0];
+        const to     = parsed.args[1];
+        console.log("Event:", from, "->", to);
         if (from !== tag && to !== tag) continue;
         let blockTime = Date.now();
-        try { const b = await provider.getBlock(event.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
-        const tokenSym = event.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+        try { const b = await provider.getBlock(log.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
+        const tokenSym = parsed.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
         newEntries.push({
-          id: event.transactionHash, type: from === tag ? "sent" : "received",
-          from, to, amount: (Number(event.args[3]) / 1e6).toFixed(2),
-          fee: (Number(event.args[4]) / 1e6).toFixed(4), token: tokenSym,
-          time: blockTime, hash: event.transactionHash, unread: true,
+          id: log.transactionHash, type: from === tag ? "sent" : "received",
+          from, to, amount: (Number(parsed.args[3]) / 1e6).toFixed(2),
+          fee: (Number(parsed.args[4]) / 1e6).toFixed(4), token: tokenSym,
+          time: blockTime, hash: log.transactionHash, unread: true,
         });
-      }
-      if (newEntries.length > 0) {
-        const merged = [...newEntries, ...existing].slice(0, 100);
-        setTxHistory(merged); saveHistory(tag, merged);
-        setUnreadCount(c => c + newEntries.length);
-      } else if (existing.length > 0) { setTxHistory(existing); }
-    } catch(err) {
-      const saved = loadHistory(tag);
-      if (saved.length > 0) setTxHistory(saved);
+      } catch(e) { console.log("Parse error:", e.message); continue; }
     }
-  };
+
+    if (newEntries.length > 0) {
+      const merged = [...newEntries, ...existing].slice(0, 100);
+      setTxHistory(merged); saveHistory(tag, merged);
+      setUnreadCount(c => c + newEntries.length);
+    } else if (existing.length > 0) { setTxHistory(existing); }
+  } catch(err) {
+    console.error("fetchOnChainHistory error:", err.message);
+    const saved = loadHistory(tag);
+    if (saved.length > 0) setTxHistory(saved);
+  }
+};
 
   const startPolling = (addr, tag) => {
     accountRef.current = addr; tagRef.current = tag;
