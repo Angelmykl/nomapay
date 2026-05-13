@@ -229,8 +229,8 @@ export default function NomaPay() {
     
     // Use raw getLogs instead of queryFilter
     const iface = new ethers.Interface([
-      "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
-    ]);
+  "event TokenSent(string fromUsername, string toUsername, address indexed token, uint256 amount, uint256 fee)"
+]);
     const topic = iface.getEvent("TokenSent").topicHash;
     
     const logs = await provider.getLogs({
