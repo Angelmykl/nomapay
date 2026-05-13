@@ -16,10 +16,9 @@ const EURC_ADDRESS     = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a";
 const RPC              = "https://rpc.testnet.arc.network";
 
 // Circle API
-const CIRCLE_API_KEY   = import.meta.env.VITE_CIRCLE_API_KEY || "";
 const CIRCLE_API_BASE  = "/api";
 
-// AED conversion rate (1 AED = 0.272 USDC)
+// AED conversion rate
 const AED_TO_USDC = 0.272;
 const USDC_TO_AED = 3.674;
 
@@ -35,16 +34,18 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",
 ];
 
-const CORRIDORS = [
-  { from: "🇦🇪 UAE", to: "🇳🇬 Nigeria",     code: "UAE→NG", currency: "NGN" },
-  { from: "🇦🇪 UAE", to: "🇮🇳 India",       code: "UAE→IN", currency: "INR" },
-  { from: "🇦🇪 UAE", to: "🇵🇭 Philippines", code: "UAE→PH", currency: "PHP" },
-  { from: "🇦🇪 UAE", to: "🇵🇰 Pakistan",   code: "UAE→PK", currency: "PKR" },
-  { from: "🇦🇪 UAE", to: "🇬🇧 UK",         code: "UAE→UK", currency: "GBP" },
-  { from: "🇦🇪 UAE", to: "🇺🇸 USA",        code: "UAE→US", currency: "USD" },
-  { from: "🇦🇪 UAE", to: "🇰🇪 Kenya",      code: "UAE→KE", currency: "KES" },
-  { from: "🇦🇪 UAE", to: "🇬🇭 Ghana",      code: "UAE→GH", currency: "GHS" },
-  { from: "🌍 Global", to: "🌍 Global",     code: "GLOBAL",  currency: "USDC" },
+// Supported currencies
+const CURRENCIES = [
+  { code: "USDC", name: "USD Coin",        flag: "💵", country: "Global" },
+  { code: "USD",  name: "US Dollar",       flag: "🇺🇸", country: "USA" },
+  { code: "AED",  name: "UAE Dirham",      flag: "🇦🇪", country: "UAE" },
+  { code: "NGN",  name: "Nigerian Naira",  flag: "🇳🇬", country: "Nigeria" },
+  { code: "GHS",  name: "Ghanaian Cedi",   flag: "🇬🇭", country: "Ghana" },
+  { code: "INR",  name: "Indian Rupee",    flag: "🇮🇳", country: "India" },
+  { code: "PHP",  name: "Philippine Peso", flag: "🇵🇭", country: "Philippines" },
+  { code: "PKR",  name: "Pakistani Rupee", flag: "🇵🇰", country: "Pakistan" },
+  { code: "GBP",  name: "British Pound",   flag: "🇬🇧", country: "UK" },
+  { code: "KES",  name: "Kenyan Shilling", flag: "🇰🇪", country: "Kenya" },
 ];
 
 const short   = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "";
@@ -56,6 +57,7 @@ const timeAgo = (ts) => {
   return `${Math.floor(d/86400000)}d ago`;
 };
 const fmtTime = (ts) => new Date(ts).toLocaleString();
+const fmtNum  = (n, dec = 2) => Number(n).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
 // Storage
 const STORAGE_KEY  = (tag) => `noma_history_v3_${tag}`;
@@ -63,15 +65,12 @@ const saveHistory  = (tag, data) => { try { localStorage.setItem(STORAGE_KEY(tag
 const loadHistory  = (tag) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY(tag)) || "[]"); } catch(e) { return []; } };
 const clearHistory = (tag) => { try { localStorage.removeItem(STORAGE_KEY(tag)); } catch(e) {} };
 
-// ── Circle API helper ─────────────────────────────────────────────────────────
-const circleApi = async (endpoint) => {
+// Circle API helper
+const circleApi = async () => {
   try {
-    const res = await fetch(`${CIRCLE_API_BASE}${endpoint}`);
+    const res = await fetch(`${CIRCLE_API_BASE}/circle`);
     return await res.json();
-  } catch(e) {
-    console.error("Circle API error:", e);
-    return null;
-  }
+  } catch(e) { return null; }
 };
 
 export default function NomaPay() {
@@ -80,17 +79,24 @@ export default function NomaPay() {
   const [tab, setTab]           = useState("send");
   const [step, setStep]         = useState("connect");
 
-  const [sendTo, setSendTo]         = useState("");
-  const [sendAmount, setSendAmount] = useState("");
-  const [sendToken, setSendToken]   = useState("USDC");
-  const [sendStatus, setSendStatus] = useState(null);
-  const [corridor, setCorridor]     = useState(CORRIDORS[0]);
+  const [sendTo, setSendTo]           = useState("");
+  const [sendAmount, setSendAmount]   = useState("");
+  const [sendToken, setSendToken]     = useState("USDC");
+  const [sendStatus, setSendStatus]   = useState(null);
   const [showReceipt, setShowReceipt] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
 
   // AED mode
   const [aedMode, setAedMode]     = useState(false);
   const [aedAmount, setAedAmount] = useState("");
+
+  // Multi-currency FX mode
+  const [fromCurrency, setFromCurrency] = useState(CURRENCIES[0]); // USDC
+  const [toCurrency, setToCurrency]     = useState(CURRENCIES[2]);  // AED
+  const [fxAmount, setFxAmount]         = useState("");
+  const [fxRates, setFxRates]           = useState({});
+  const [fxLoading, setFxLoading]       = useState(false);
+  const [fxError, setFxError]           = useState(null);
 
   const [swapFrom, setSwapFrom]     = useState("USDC");
   const [swapAmount, setSwapAmount] = useState("");
@@ -107,46 +113,97 @@ export default function NomaPay() {
   const [showNotif, setShowNotif]   = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // Circle API data
-  const [circleStatus, setCircleStatus]   = useState(null);
-  const [circlePing, setCirclePing]       = useState(false);
-
-  const [payLinkTag, setPayLinkTag] = useState(null);
+  const [circlePing, setCirclePing]     = useState(false);
+  const [circleStatus, setCircleStatus] = useState("—");
+  const [payLinkTag, setPayLinkTag]     = useState(null);
 
   const notifRef    = useRef(null);
   const tagRef      = useRef("");
   const accountRef  = useRef("");
   const intervalRef = useRef(null);
 
-  // Compute USDC amount from AED
+  // AED computed
   const aedToUsdc = aedAmount ? (parseFloat(aedAmount) * AED_TO_USDC).toFixed(2) : "";
   const effectiveSendAmount = aedMode ? aedToUsdc : sendAmount;
 
+  // FX computed
+  const getRate = (from, to) => {
+    if (from === to) return 1;
+    if (!fxRates || Object.keys(fxRates).length === 0) return null;
+    // All rates are relative to USD
+    // USDC = USD for our purposes
+    const fromCode = from === "USDC" ? "USD" : from;
+    const toCode   = to   === "USDC" ? "USD" : to;
+    const fromRate = fxRates[fromCode] || 1;
+    const toRate   = fxRates[toCode]   || 1;
+    return toRate / fromRate;
+  };
+
+  const fxRate       = getRate(fromCurrency.code, toCurrency.code);
+  const fxConverted  = fxAmount && fxRate ? (parseFloat(fxAmount) * fxRate).toFixed(2) : "";
+  // How much USDC is being sent on-chain
+  const usdRate      = getRate(fromCurrency.code, "USD");
+  const fxUsdcAmount = fxAmount && usdRate ? (parseFloat(fxAmount) * usdRate).toFixed(4) : "";
+  const fxFee        = fxUsdcAmount ? (parseFloat(fxUsdcAmount) * 0.005).toFixed(4) : "0";
+  const fxNet        = fxUsdcAmount ? (parseFloat(fxUsdcAmount) - parseFloat(fxFee)).toFixed(4) : "0";
+
+  // Send fee
+  const sendFee = effectiveSendAmount && !isNaN(effectiveSendAmount) ? (parseFloat(effectiveSendAmount) * 0.005).toFixed(4) : "0";
+  const sendNet = effectiveSendAmount && !isNaN(effectiveSendAmount) ? (parseFloat(effectiveSendAmount) - parseFloat(sendFee)).toFixed(4) : "0";
+
+  const swapTo         = swapFrom === "USDC" ? "EURC" : "USDC";
+  const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.998).toFixed(4) : null;
+  const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount)*0.002).toFixed(4) : null;
+  const payLink        = `${window.location.origin}/pay/${username}`;
+
+  // Detect pay link
   useEffect(() => {
     const path = window.location.pathname;
     const match = path.match(/^\/pay\/([a-z0-9_]+)$/);
     if (match) { setPayLinkTag(match[1]); setSendTo(match[1]); }
   }, []);
 
+  // Close notif on outside click
   useEffect(() => {
     const h = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setShowNotif(false); };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // ── Circle API ping on load ───────────────────────────────────────────────
+  // Ping Circle API on load
   useEffect(() => {
-    const pingCircle = async () => {
-      const result = await circleApi("/circle");
-      if (result) {
-        setCirclePing(true);
-        setCircleStatus("Connected");
-      }
+    const ping = async () => {
+      const result = await circleApi();
+      if (result?.success) { setCirclePing(true); setCircleStatus("Connected"); }
     };
-    pingCircle();
+    ping();
   }, []);
 
-  // ── Balances ──────────────────────────────────────────────────────────────
+  // Fetch FX rates on load
+  useEffect(() => {
+    const fetchRates = async () => {
+      setFxLoading(true);
+      try {
+        const res  = await fetch("https://open.er-api.com/v6/latest/USD");
+        const data = await res.json();
+        if (data?.rates) {
+          setFxRates(data.rates);
+          setFxError(null);
+        }
+      } catch(e) {
+        setFxError("Using cached rates");
+        // Fallback static rates
+        setFxRates({
+          USD:1, AED:3.674, NGN:1620, GHS:15.8,
+          INR:83.5, PHP:57.8, PKR:278.5, GBP:0.79, KES:129.5
+        });
+      }
+      setFxLoading(false);
+    };
+    fetchRates();
+  }, []);
+
+  // Balances
   const fetchBalances = async (addr) => {
     if (!addr) return;
     try {
@@ -160,7 +217,7 @@ export default function NomaPay() {
     } catch(e) {}
   };
 
-  // ── On-chain history ──────────────────────────────────────────────────────
+  // On-chain history
   const fetchOnChainHistory = async (tag) => {
     if (!tag) return;
     try {
@@ -222,7 +279,7 @@ export default function NomaPay() {
     setTimeout(() => setToast(null), 5000);
   };
 
-  // ── Connect ───────────────────────────────────────────────────────────────
+  // Connect
   const connectWallet = async () => {
     if (!window.ethereum) { showToast("Please install MetaMask", "error"); return; }
     try {
@@ -237,7 +294,7 @@ export default function NomaPay() {
     } catch(err) { showToast("Connection failed: " + err.message, "error"); }
   };
 
-  // ── Register ──────────────────────────────────────────────────────────────
+  // Register
   const registerUsername = async () => {
     if (!regInput.trim()) return;
     if (!/^[a-z0-9_]{3,20}$/.test(regInput)) {
@@ -280,7 +337,7 @@ export default function NomaPay() {
     setUnreadCount(c => c + 1);
   };
 
-  // ── Execute Send ──────────────────────────────────────────────────────────
+  // Send
   const executeSend = async () => {
     setShowConfirm(false);
     setSendStatus("pending");
@@ -289,32 +346,34 @@ export default function NomaPay() {
       const p      = new ethers.BrowserProvider(window.ethereum);
       const signer = await p.getSigner();
       const tAddr  = sendToken === "USDC" ? USDC_ADDRESS : EURC_ADDRESS;
-      const amt    = ethers.parseUnits(effectiveSendAmount, 6);
+      const amt    = ethers.parseUnits(
+        aedMode ? effectiveSendAmount : (fromCurrency.code === "USDC" ? sendAmount : fxUsdcAmount || sendAmount),
+        6
+      );
       await (await new ethers.Contract(tAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
       const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).sendToUsername(sendTo, tAddr, amt);
       await tx.wait();
-      const fee = (parseFloat(effectiveSendAmount) * 0.005).toFixed(4);
-      const net = (parseFloat(effectiveSendAmount) - parseFloat(fee)).toFixed(4);
-
-      // Ping Circle API to log the transaction (verifiable usage)
-      setCirclePing(true);
-
+      circleApi();
+      const usdcSent = aedMode ? effectiveSendAmount : (fxUsdcAmount || sendAmount);
+      const fee = (parseFloat(usdcSent) * 0.005).toFixed(4);
+      const net = (parseFloat(usdcSent) - parseFloat(fee)).toFixed(4);
       const receipt = {
         id: tx.hash, type: "sent", from: username, to: sendTo,
-        amount: net, fee, token: sendToken, hash: tx.hash,
-        time: sendTime, corridor: corridor.code,
+        amount: net, fee, token: sendToken, hash: tx.hash, time: sendTime,
         aedAmount: aedMode ? aedAmount : null,
-        usdcAmount: effectiveSendAmount,
+        fxFrom: !aedMode && fromCurrency.code !== "USDC" ? `${fxAmount} ${fromCurrency.code}` : null,
+        fxTo:   !aedMode && toCurrency.code !== "USDC"   ? toCurrency.code : null,
+        usdcAmount: usdcSent,
       };
       addLocalTx(receipt);
       setShowReceipt(receipt);
-      setSendAmount(""); setAedAmount(""); setSendTo("");
+      setSendAmount(""); setAedAmount(""); setFxAmount(""); setSendTo("");
       setSendStatus("done"); fetchBalances(account);
       setTimeout(() => setSendStatus(null), 2000);
     } catch(err) { showToast("Send failed: " + err.message, "error"); setSendStatus(null); }
   };
 
-  // ── Swap ──────────────────────────────────────────────────────────────────
+  // Swap
   const swapTokens = async () => {
     if (!swapAmount || parseFloat(swapAmount) <= 0) { showToast("Enter amount to swap", "error"); return; }
     setSwapStatus("pending");
@@ -326,10 +385,7 @@ export default function NomaPay() {
       await (await new ethers.Contract(fAddr, ERC20_ABI, signer).approve(NOMAPAY_CONTRACT, amt)).wait();
       const tx = await new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, signer).swap(fAddr, amt);
       await tx.wait();
-
-      // Ping Circle API (verifiable usage)
-      setCirclePing(true);
-
+      circleApi();
       const toToken = swapFrom === "USDC" ? "EURC" : "USDC";
       const net = (parseFloat(swapAmount) * 0.998).toFixed(4);
       addLocalTx({ id: tx.hash, type: "swap", from: swapFrom, to: toToken, amount: swapAmount, net, token: swapFrom, hash: tx.hash });
@@ -340,12 +396,12 @@ export default function NomaPay() {
     } catch(err) { showToast("Swap failed: " + err.message, "error"); setSwapStatus(null); }
   };
 
-  const swapTo         = swapFrom === "USDC" ? "EURC" : "USDC";
-  const sendFee        = effectiveSendAmount && !isNaN(effectiveSendAmount) ? (parseFloat(effectiveSendAmount) * 0.005).toFixed(4) : "0";
-  const sendNet        = effectiveSendAmount && !isNaN(effectiveSendAmount) ? (parseFloat(effectiveSendAmount) - parseFloat(sendFee)).toFixed(4) : "0";
-  const swapNetPreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount) * 0.998).toFixed(4) : null;
-  const swapFeePreview = swapAmount && !isNaN(swapAmount) ? (parseFloat(swapAmount) * 0.002).toFixed(4) : null;
-  const payLink        = `${window.location.origin}/pay/${username}`;
+  // Flip FX currencies
+  const flipCurrencies = () => {
+    setFromCurrency(toCurrency);
+    setToCurrency(fromCurrency);
+    setFxAmount(fxConverted || "");
+  };
 
   // ─── Styles ────────────────────────────────────────────────────────────────
   const C = { bg:"#080a0f", card:"#0f1117", border:"#1c2133", accent:"#00e5a0", accent2:"#0099ff", text:"#e8eaf2", muted:"#5a6478", error:"#ff5f5f", gold:"#ffc947" };
@@ -396,7 +452,7 @@ export default function NomaPay() {
     atSign:{ padding:"0 12px", color:C.accent, fontSize:16, fontWeight:700, borderRight:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     nomaTag:{ padding:"0 12px", color:C.muted, fontSize:12, borderLeft:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     input:{ flex:1, background:"transparent", border:"none", outline:"none", color:C.text, fontSize:14, padding:"0 12px", height:46, fontFamily:"inherit", minWidth:0 },
-    select:{ flex:1, background:"transparent", border:"none", outline:"none", color:C.text, fontSize:13, padding:"0 12px", height:46, fontFamily:"inherit", minWidth:0, cursor:"pointer" },
+    select:{ flex:1, background:"#0b0d12", border:"none", outline:"none", color:C.text, fontSize:13, padding:"8px 12px", fontFamily:"inherit", minWidth:0, cursor:"pointer", borderRadius:8 },
     feeBox:{ display:"flex", justifyContent:"space-between", background:"rgba(0,229,160,0.04)", border:`1px solid rgba(0,229,160,0.14)`, borderRadius:8, padding:"9px 13px", marginBottom:14, fontSize:12 },
     feeAmt:{ color:C.accent, fontWeight:600 },
     statusMsg:{ fontSize:12, marginBottom:12, lineHeight:1.5 },
@@ -421,6 +477,19 @@ export default function NomaPay() {
     amtToken:{ padding:"0 13px", color:C.muted, fontSize:12, borderLeft:`1px solid ${C.border}`, height:52, display:"flex", alignItems:"center", flexShrink:0 },
     feeRow:{ display:"flex", justifyContent:"space-between", fontSize:11, color:C.muted, padding:"3px 0" },
     feeRowNet:{ color:C.accent, fontWeight:600 },
+    // FX selector styles
+    fxBox:{ display:"flex", alignItems:"center", gap:8, marginBottom:12 },
+    fxSide:{ flex:1, background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px" },
+    fxLabel:{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:6 },
+    fxCurrencyRow:{ display:"flex", alignItems:"center", gap:6, marginBottom:6 },
+    fxFlag:{ fontSize:16 },
+    fxCode:{ fontSize:13, fontWeight:700 },
+    fxName:{ fontSize:9, color:C.muted },
+    fxInput:{ background:"transparent", border:"none", outline:"none", color:C.text, fontSize:18, fontWeight:700, width:"100%", fontFamily:"inherit" },
+    fxOutput:{ fontSize:18, fontWeight:700, color:C.accent, minHeight:27 },
+    fxArrow:{ width:36, height:36, borderRadius:"50%", background:"rgba(0,229,160,0.1)", border:`1px solid ${C.accent}`, color:C.accent, cursor:"pointer", fontSize:14, fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 },
+    fxRateBox:{ background:"rgba(0,153,255,0.05)", border:`1px solid rgba(0,153,255,0.15)`, borderRadius:8, padding:"8px 12px", marginBottom:10 },
+    fxRateRow:{ display:"flex", justifyContent:"space-between", fontSize:11, padding:"2px 0" },
     swapBox:{ display:"flex", alignItems:"center", gap:8, marginBottom:10 },
     swapSide:{ flex:1, background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px" },
     swapLabel:{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:4 },
@@ -444,6 +513,13 @@ export default function NomaPay() {
     copyBtn:{ fontSize:10, background:"rgba(0,229,160,0.1)", border:`1px solid ${C.accent}`, color:C.accent, borderRadius:6, padding:"3px 10px", cursor:"pointer", fontFamily:"inherit" },
     circleBox:{ background:"rgba(0,153,255,0.05)", border:`1px solid rgba(0,153,255,0.2)`, borderRadius:8, padding:"10px 13px", marginTop:14 },
     circleBoxTitle:{ fontSize:9, color:C.accent2, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:6 },
+    aedBox:{ background:"rgba(255,201,71,0.05)", border:`1px solid rgba(255,201,71,0.2)`, borderRadius:10, padding:"12px 14px", marginBottom:12 },
+    aedTitle:{ fontSize:10, color:C.gold, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 },
+    aedRow:{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0", color:C.muted },
+    aedVal:{ color:C.gold, fontWeight:600 },
+    modeSwitcher:{ display:"flex", gap:6, marginBottom:14 },
+    modeBtn:{ flex:1, padding:"8px 6px", background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:8, color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit" },
+    modeBtnActive:{ border:`1px solid ${C.gold}`, color:C.gold, background:"rgba(255,201,71,0.06)" },
     toast:{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", background:"rgba(0,229,160,0.12)", border:`1px solid ${C.accent}`, color:C.accent, padding:"10px 20px", borderRadius:40, fontSize:12, fontWeight:600, zIndex:300, backdropFilter:"blur(12px)", whiteSpace:"nowrap", maxWidth:"calc(100vw - 32px)", overflow:"hidden", textOverflow:"ellipsis" },
     toastErr:{ background:"rgba(255,95,95,0.12)", border:`1px solid ${C.error}`, color:C.error },
     footer:{ position:"relative", zIndex:10, textAlign:"center", padding:"20px 20px 10px", color:C.muted, fontSize:10, letterSpacing:"0.07em", borderTop:`1px solid ${C.border}` },
@@ -464,14 +540,6 @@ export default function NomaPay() {
     receiptKey:{ color:C.muted },
     receiptHash:{ fontSize:10, color:C.accent, wordBreak:"break-all", marginTop:8, cursor:"pointer", textDecoration:"underline" },
     receiptBtns:{ display:"flex", gap:10, marginTop:16 },
-    aedBox:{ background:"rgba(255,201,71,0.05)", border:`1px solid rgba(255,201,71,0.2)`, borderRadius:10, padding:"12px 14px", marginBottom:12 },
-    aedTitle:{ fontSize:10, color:C.gold, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8 },
-    aedRow:{ display:"flex", justifyContent:"space-between", fontSize:12, padding:"3px 0", color:C.muted },
-    aedVal:{ color:C.gold, fontWeight:600 },
-    modeSwitcher:{ display:"flex", gap:6, marginBottom:14 },
-    modeBtn:{ flex:1, padding:"8px 6px", background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:8, color:C.muted, cursor:"pointer", fontSize:11, fontFamily:"inherit" },
-    modeBtnActive:{ border:`1px solid ${C.gold}`, color:C.gold, background:"rgba(255,201,71,0.06)" },
-    corridorBadge:{ display:"flex", alignItems:"center", background:"rgba(0,153,255,0.06)", border:`1px solid rgba(0,153,255,0.18)`, borderRadius:8, padding:"6px 10px", marginBottom:12, overflow:"hidden" },
   };
 
   const getTxIcon = (type) => {
@@ -488,6 +556,20 @@ export default function NomaPay() {
     return "Transaction";
   };
 
+  // Currency selector component
+  const CurrencySelect = ({ value, onChange, label }) => (
+    <div style={s.fxSide}>
+      <div style={s.fxLabel}>{label}</div>
+      <select style={s.select} value={value.code} onChange={e => onChange(CURRENCIES.find(c => c.code === e.target.value))}>
+        {CURRENCIES.map(c => (
+          <option key={c.code} value={c.code} style={{background:C.card}}>
+            {c.flag} {c.code} — {c.country}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
     <div style={s.root}>
       <div style={s.bgGlow}/><div style={s.bgGrid}/>
@@ -501,19 +583,27 @@ export default function NomaPay() {
             {aedMode && (
               <div style={{...s.aedBox, marginBottom:14}}>
                 <div style={s.aedTitle}>AED Conversion</div>
-                <div style={s.aedRow}><span>You pay (AED)</span><span style={s.aedVal}>{aedAmount} AED</span></div>
+                <div style={s.aedRow}><span>You pay</span><span style={s.aedVal}>{aedAmount} AED</span></div>
                 <div style={s.aedRow}><span>Rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
-                <div style={s.aedRow}><span>Converted to USDC</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
+                <div style={s.aedRow}><span>Converted</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
+              </div>
+            )}
+            {!aedMode && fromCurrency.code !== "USDC" && (
+              <div style={{...s.aedBox, marginBottom:14}}>
+                <div style={s.aedTitle}>FX Conversion</div>
+                <div style={s.aedRow}><span>You pay</span><span style={s.aedVal}>{fxAmount} {fromCurrency.code}</span></div>
+                <div style={s.aedRow}><span>Rate</span><span style={s.aedVal}>1 {fromCurrency.code} = {fxRate ? fxRate.toFixed(4) : "—"} {toCurrency.code}</span></div>
+                <div style={s.aedRow}><span>Recipient gets</span><span style={s.aedVal}>{fxConverted} {toCurrency.code}</span></div>
+                <div style={s.aedRow}><span>USDC on-chain</span><span style={s.aedVal}>{fxUsdcAmount} USDC</span></div>
               </div>
             )}
             {[
-              ["Corridor", `${corridor.from} → ${corridor.to}`],
-              ["Recipient", `${sendTo}.noma`],
-              ["USDC sent", `${effectiveSendAmount} USDC`],
-              ["Fee (0.5%)", `${sendFee} USDC`],
-              ["They receive", `${sendNet} USDC`],
-              ["Settlement", "< 1 second on Arc"],
-              ["Rail", "USDC on Arc (Circle)"],
+              ["Recipient",    `${sendTo}.noma`],
+              ["USDC sent",    `${aedMode ? effectiveSendAmount : (fxUsdcAmount || sendAmount)} USDC`],
+              ["Fee (0.5%)",   `${sendFee} USDC`],
+              ["They receive", `${aedMode ? sendNet : fxNet} USDC`],
+              ["Settlement",   "< 1 second on Arc"],
+              ["Rail",         "USDC on Arc (Circle)"],
             ].map(([k,v]) => (
               <div key={k} style={s.modalRow}><span style={s.modalKey}>{k}</span><span style={{fontWeight:600}}>{v}</span></div>
             ))}
@@ -525,7 +615,7 @@ export default function NomaPay() {
         </div>
       )}
 
-      {/* Receipt Modal */}
+      {/* Receipt */}
       {showReceipt && (
         <div style={s.receiptBox}>
           <div style={s.receiptCard}>
@@ -540,13 +630,19 @@ export default function NomaPay() {
                 <div style={s.aedRow}><span>Settled in USDC</span><span style={s.aedVal}>{showReceipt.usdcAmount} USDC</span></div>
               </div>
             )}
+            {showReceipt.fxFrom && (
+              <div style={{...s.aedBox, marginBottom:12}}>
+                <div style={s.aedTitle}>FX Payment</div>
+                <div style={s.aedRow}><span>Paid in</span><span style={s.aedVal}>{showReceipt.fxFrom}</span></div>
+                <div style={s.aedRow}><span>Settled in USDC</span><span style={s.aedVal}>{showReceipt.usdcAmount} USDC</span></div>
+              </div>
+            )}
             {[
-              ["From", `${showReceipt.from}.noma`],
-              ["To", `${showReceipt.to}.noma`],
-              ["Fee paid", `${showReceipt.fee} ${showReceipt.token}`],
-              ["Corridor", showReceipt.corridor || "Global"],
+              ["From",       `${showReceipt.from}.noma`],
+              ["To",         `${showReceipt.to}.noma`],
+              ["Fee paid",   `${showReceipt.fee} ${showReceipt.token}`],
               ["Settled at", fmtTime(showReceipt.time)],
-              ["Finality", "< 1 second"],
+              ["Finality",   "< 1 second"],
               ["Powered by", "Circle USDC on Arc"],
             ].map(([k,v]) => (
               <div key={k} style={s.receiptRow}><span style={s.receiptKey}>{k}</span><span>{v}</span></div>
@@ -557,9 +653,7 @@ export default function NomaPay() {
             <div style={s.receiptBtns}>
               <button style={s.btnOutline} onClick={() => setShowReceipt(null)}>Close</button>
               <button style={s.modalConfirm} onClick={() => {
-                navigator.clipboard.writeText(
-                  `NomaPay Receipt\n${showReceipt.aedAmount ? `Paid: ${showReceipt.aedAmount} AED → ` : ""}${showReceipt.amount} ${showReceipt.token} sent to ${showReceipt.to}.noma\nFee: ${showReceipt.fee} ${showReceipt.token}\nSettled on Arc via Circle USDC\nTx: ${showReceipt.hash}`
-                );
+                navigator.clipboard.writeText(`NomaPay Receipt\n${showReceipt.amount} ${showReceipt.token} sent to ${showReceipt.to}.noma\nFee: ${showReceipt.fee}\nSettled on Arc via Circle USDC\nTx: ${showReceipt.hash}`);
                 showToast("Receipt copied!");
               }}>Copy Receipt</button>
             </div>
@@ -630,19 +724,19 @@ export default function NomaPay() {
             <div style={s.logoIcon}>◈</div>
             <h1 style={s.title}>NomaPay</h1>
             <p style={{...s.sub, fontSize:12, color:C.accent, letterSpacing:"0.06em", marginBottom:6}}>CROSS-BORDER PAYMENTS ON ARC</p>
-            <p style={s.sub}>Pay in AED. Settle in USDC. Send to anyone globally using just a .noma tag. Built on Arc — Circle's stablecoin-native L1.</p>
+            <p style={s.sub}>Pay in AED, NGN, GHS, INR and more. Settle in USDC instantly. Send to anyone globally using just a .noma tag.</p>
             <div style={{display:"flex", gap:6, justifyContent:"center", flexWrap:"wrap", marginBottom:18}}>
-              {["⚡ < 1s Settlement","🇦🇪 Pay in AED","🔒 USDC Native","💱 Built-in FX","🔵 Circle API"].map(t => (
+              {["⚡ < 1s Settlement","🌍 10+ Currencies","🔒 USDC Native","💱 Live FX Rates","🔵 Circle API"].map(t => (
                 <span key={t} style={{fontSize:10, background:"rgba(0,229,160,0.08)", border:"1px solid rgba(0,229,160,0.2)", color:C.accent, padding:"3px 9px", borderRadius:20}}>{t}</span>
               ))}
             </div>
             <div style={s.features}>
               {[
-                ["◆","Pay in AED — settle in USDC on Arc"],
+                ["◆","Pay in 10+ currencies — settle in USDC on Arc"],
+                ["◆","Live FX rates — NGN, GHS, INR, PHP, PKR & more"],
+                ["◆","Bidirectional — any currency to any currency"],
                 ["◆","Username-based remittances (.noma tags)"],
-                ["◆","USDC & EURC — Circle regulated stablecoins"],
-                ["◆","Transparent fee breakdown before every send"],
-                ["◆","Built-in USDC ↔ EURC FX swap"],
+                ["◆","Built-in USDC ↔ EURC swap"],
                 ["◆","Circle API integrated · Verifiable on Arc"],
               ].map(([i,f])=>(
                 <div key={f} style={s.feat}><span style={s.featIcon}>{i}</span>{f}</div>
@@ -651,7 +745,6 @@ export default function NomaPay() {
             <button style={s.btnPrimary} onClick={connectWallet}>Connect Wallet →</button>
             <div style={{marginTop:12, textAlign:"center", fontSize:10, color:C.muted}}>
               Powered by <span style={{color:C.accent2}}>Circle USDC</span> on <span style={{color:C.accent}}>Arc Testnet</span>
-              {circlePing && <span style={{color:C.accent2}}> · Circle API ✓</span>}
             </div>
           </div>
         </div>
@@ -690,7 +783,6 @@ export default function NomaPay() {
               💳 Payment request from <strong>{payLinkTag}.noma</strong>
             </div>
           )}
-
           <div style={s.userBar}>
             <div>
               <div style={s.userHandle}>{username}.noma</div>
@@ -716,27 +808,17 @@ export default function NomaPay() {
           {tab==="send" && (
             <div style={s.panel}>
               <h3 style={s.panelTitle}>Send Remittance</h3>
-              <p style={s.panelSub}>Pay in AED or USDC · Instant settlement · Transparent fees</p>
+              <p style={s.panelSub}>Pay in any currency · Settle in USDC · Instant on Arc</p>
 
-              {/* Payment mode switcher */}
+              {/* Mode switcher */}
               <label style={s.label}>Payment Mode</label>
               <div style={s.modeSwitcher}>
                 <button style={{...s.modeBtn,...(!aedMode?s.modeBtnActive:{})}} onClick={() => setAedMode(false)}>
-                  💵 Pay in USDC
+                  💵 Pay in USDC / FX
                 </button>
                 <button style={{...s.modeBtn,...(aedMode?s.modeBtnActive:{})}} onClick={() => setAedMode(true)}>
                   🇦🇪 Pay in AED
                 </button>
-              </div>
-
-              {/* Corridor */}
-              <label style={s.label}>Remittance Corridor</label>
-              <div style={s.corridorBadge}>
-                <select style={s.select} value={corridor.code} onChange={e => setCorridor(CORRIDORS.find(c=>c.code===e.target.value))}>
-                  {CORRIDORS.map(c => (
-                    <option key={c.code} value={c.code} style={{background:C.card}}>{c.from} → {c.to}</option>
-                  ))}
-                </select>
               </div>
 
               {/* Recipient */}
@@ -747,24 +829,10 @@ export default function NomaPay() {
                 <span style={s.nomaTag}>.noma</span>
               </div>
 
-              {/* Token selector — only show in USDC mode */}
-              {!aedMode && (
-                <>
-                  <label style={s.label}>Token</label>
-                  <div style={s.tokenToggle}>
-                    {["USDC","EURC"].map(t=>(
-                      <button key={t} style={{...s.tokenBtn,...(sendToken===t?s.tokenBtnActive:{})}} onClick={()=>setSendToken(t)}>
-                        {t==="USDC"?"💵":"💶"} {t}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-
-              {/* Amount input */}
-              <label style={s.label}>{aedMode ? "Amount in AED (د.إ)" : "Amount"}</label>
+              {/* AED MODE */}
               {aedMode ? (
                 <>
+                  <label style={s.label}>Amount in AED (د.إ)</label>
                   <div style={s.amtWrap}>
                     <input style={{...s.input,...s.amtInput}} placeholder="0.00" type="number" min="0"
                       value={aedAmount} onChange={e=>setAedAmount(e.target.value)}/>
@@ -774,7 +842,7 @@ export default function NomaPay() {
                     <div style={s.aedBox}>
                       <div style={s.aedTitle}>AED → USDC Conversion</div>
                       <div style={s.aedRow}><span>You pay</span><span style={s.aedVal}>{aedAmount} AED</span></div>
-                      <div style={s.aedRow}><span>Exchange rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
+                      <div style={s.aedRow}><span>Rate</span><span style={s.aedVal}>1 AED = {AED_TO_USDC} USDC</span></div>
                       <div style={s.aedRow}><span>Converted</span><span style={s.aedVal}>{aedToUsdc} USDC</span></div>
                       <div style={s.aedRow}><span>Fee (0.5%)</span><span style={{color:C.error}}>−{sendFee} USDC</span></div>
                       <div style={{...s.aedRow, marginTop:6, paddingTop:6, borderTop:`1px solid rgba(255,201,71,0.2)`}}>
@@ -786,20 +854,93 @@ export default function NomaPay() {
                   )}
                 </>
               ) : (
+                /* FX / USDC MODE */
                 <>
-                  <div style={s.amtWrap}>
-                    <input style={{...s.input,...s.amtInput}} placeholder="0.00" type="number" min="0"
-                      value={sendAmount} onChange={e=>setSendAmount(e.target.value)}/>
-                    <span style={s.amtToken}>{sendToken}</span>
+                  {/* Currency pair selector */}
+                  <label style={s.label}>Currency Corridor</label>
+                  <div style={s.fxBox}>
+                    <div style={s.fxSide}>
+                      <div style={s.fxLabel}>You pay in</div>
+                      <select style={s.select} value={fromCurrency.code}
+                        onChange={e => setFromCurrency(CURRENCIES.find(c => c.code === e.target.value))}>
+                        {CURRENCIES.map(c => (
+                          <option key={c.code} value={c.code} style={{background:C.card}}>
+                            {c.flag} {c.code} — {c.country}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button style={s.fxArrow} onClick={flipCurrencies} title="Flip currencies">⇄</button>
+                    <div style={s.fxSide}>
+                      <div style={s.fxLabel}>They receive in</div>
+                      <select style={s.select} value={toCurrency.code}
+                        onChange={e => setToCurrency(CURRENCIES.find(c => c.code === e.target.value))}>
+                        {CURRENCIES.map(c => (
+                          <option key={c.code} value={c.code} style={{background:C.card}}>
+                            {c.flag} {c.code} — {c.country}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                  {sendAmount && parseFloat(sendAmount) > 0 && (
+
+                  {/* Live rate display */}
+                  {fxRate && fromCurrency.code !== toCurrency.code && (
+                    <div style={s.fxRateBox}>
+                      <div style={s.fxRateRow}>
+                        <span style={{color:C.muted}}>Live rate</span>
+                        <span style={{color:C.accent2, fontWeight:600}}>
+                          1 {fromCurrency.code} = {fxLoading ? "..." : fmtNum(fxRate, 4)} {toCurrency.code}
+                        </span>
+                      </div>
+                      <div style={s.fxRateRow}>
+                        <span style={{color:C.muted}}>Settlement rail</span>
+                        <span style={{color:C.accent}}>USDC on Arc</span>
+                      </div>
+                      {fxError && <div style={{...s.fxRateRow, color:"rgba(255,201,71,0.7)"}}><span>⚠ {fxError}</span></div>}
+                    </div>
+                  )}
+
+                  {/* Amount input */}
+                  <label style={s.label}>
+                    Amount in {fromCurrency.flag} {fromCurrency.code}
+                  </label>
+                  <div style={s.fxBox}>
+                    <div style={{...s.fxSide, flex:1}}>
+                      <div style={s.fxLabel}>You send</div>
+                      <input style={s.fxInput} placeholder="0.00" type="number" min="0"
+                        value={fromCurrency.code === "USDC" ? sendAmount : fxAmount}
+                        onChange={e => {
+                          if (fromCurrency.code === "USDC") setSendAmount(e.target.value);
+                          else setFxAmount(e.target.value);
+                        }}/>
+                      <div style={{fontSize:10, color:C.muted, marginTop:4}}>{fromCurrency.flag} {fromCurrency.code}</div>
+                    </div>
+                    <div style={{color:C.muted, fontSize:18, alignSelf:"center"}}>→</div>
+                    <div style={{...s.fxSide, flex:1}}>
+                      <div style={s.fxLabel}>They receive</div>
+                      <div style={s.fxOutput}>
+                        {fromCurrency.code === "USDC"
+                          ? (sendAmount && fxRate ? fmtNum(parseFloat(sendAmount) * fxRate) : "0.00")
+                          : (fxConverted ? fmtNum(parseFloat(fxConverted)) : "0.00")
+                        }
+                      </div>
+                      <div style={{fontSize:10, color:C.muted, marginTop:4}}>{toCurrency.flag} {toCurrency.code}</div>
+                    </div>
+                  </div>
+
+                  {/* Fee breakdown */}
+                  {(fromCurrency.code === "USDC" ? sendAmount : fxAmount) && parseFloat(fromCurrency.code === "USDC" ? sendAmount : fxAmount) > 0 && (
                     <div style={{background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"12px 14px", marginBottom:8}}>
                       <div style={{fontSize:10, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:8}}>Fee Breakdown</div>
-                      <div style={s.feeRow}><span>You send</span><span>{sendAmount} {sendToken}</span></div>
-                      <div style={s.feeRow}><span>Fee (0.5%)</span><span style={{color:C.error}}>−{sendFee} {sendToken}</span></div>
+                      {fromCurrency.code !== "USDC" && (
+                        <div style={s.feeRow}><span>USDC on-chain amount</span><span style={{color:C.accent2}}>{fxUsdcAmount} USDC</span></div>
+                      )}
+                      <div style={s.feeRow}><span>NomaPay fee (0.5%)</span><span style={{color:C.error}}>−{fromCurrency.code==="USDC"?sendFee:fxFee} USDC</span></div>
                       <div style={s.feeRow}><span>Gas on Arc</span><span style={{color:C.accent}}>~0.00 USDC</span></div>
                       <div style={{...s.feeRow,...s.feeRowNet, marginTop:6, paddingTop:6, borderTop:`1px solid ${C.border}`}}>
-                        <span>They receive</span><span>{sendNet} {sendToken}</span>
+                        <span>Recipient gets</span>
+                        <span>{fromCurrency.code==="USDC"?sendNet:fxNet} USDC</span>
                       </div>
                       <div style={s.feeRow}><span>Settlement</span><span style={{color:C.accent}}>{"< 1 second on Arc"}</span></div>
                     </div>
@@ -808,18 +949,17 @@ export default function NomaPay() {
               )}
 
               <button
-                style={{...s.btnPrimary, marginTop:8, opacity:(!sendTo || !(aedMode?aedAmount:sendAmount) || sendStatus==="pending")?0.5:1}}
+                style={{...s.btnPrimary, marginTop:8, opacity:sendStatus==="pending"?0.5:1}}
                 onClick={() => {
-                  const amt = aedMode ? aedToUsdc : sendAmount;
-                  if (!sendTo || !amt || parseFloat(amt)<=0) { showToast("Enter recipient and amount","error"); return; }
+                  if (!sendTo) { showToast("Enter recipient","error"); return; }
+                  const amt = aedMode ? aedToUsdc : (fromCurrency.code==="USDC" ? sendAmount : fxUsdcAmount);
+                  if (!amt || parseFloat(amt)<=0) { showToast("Enter amount","error"); return; }
                   setShowConfirm(true);
                 }}
-                disabled={!sendTo || !(aedMode?aedAmount:sendAmount) || sendStatus==="pending"}
+                disabled={sendStatus==="pending"}
               >
                 {sendStatus==="pending"?"Sending…":sendStatus==="done"?"✓ Sent!":"Review & Send →"}
               </button>
-
-              {/* Circle powered badge */}
               <div style={{marginTop:10, textAlign:"center", fontSize:10, color:C.muted}}>
                 Settled via <span style={{color:C.accent2}}>Circle USDC</span> on <span style={{color:C.accent}}>Arc Testnet</span>
               </div>
@@ -868,19 +1008,18 @@ export default function NomaPay() {
                 <div style={s.profileAddr}>{account}</div>
               </div>
               {[
-                ["Network","Arc Testnet (Circle L1)"],
-                ["Noma Tag",`${username}.noma`],
-                ["Address",short(account)],
-                ["USDC Balance",`${usdcBal} USDC`],
-                ["EURC Balance",`${eurcBal} EURC`],
+                ["Network",         "Arc Testnet (Circle L1)"],
+                ["Noma Tag",        `${username}.noma`],
+                ["Address",         short(account)],
+                ["USDC Balance",    `${usdcBal} USDC`],
+                ["EURC Balance",    `${eurcBal} EURC`],
                 ["USDC (AED equiv)",`≈ ${(parseFloat(usdcBal) * USDC_TO_AED).toFixed(2)} AED`],
-                ["Send Fee","0.5% per transfer"],
-                ["Settlement","< 1 second on Arc"],
+                ["Send Fee",        "0.5% per transfer"],
+                ["Settlement",      "< 1 second on Arc"],
+                ["FX Rates",        fxLoading ? "Loading…" : "Live · open.er-api.com"],
               ].map(([k,v])=>(
                 <div key={k} style={s.infoRow}><span style={s.infoKey}>{k}</span><span>{v}</span></div>
               ))}
-
-              {/* Payment link */}
               <div style={s.payLinkBox}>
                 <div style={s.payLinkLabel}>Your Payment Link</div>
                 <div style={s.payLinkUrl}>{payLink}</div>
@@ -888,16 +1027,14 @@ export default function NomaPay() {
                   Copy Link
                 </button>
               </div>
-
-              {/* Circle API status */}
               <div style={s.circleBox}>
                 <div style={s.circleBoxTitle}>Circle API Status</div>
                 {[
                   ["API Connection", circlePing ? "✓ Connected" : "Connecting…"],
-                  ["Status", circleStatus || "—"],
-                  ["Network", "Arc Testnet"],
-                  ["USDC Rail", "Circle Native"],
-                  ["EURC Rail", "Circle Native"],
+                  ["Status",         circleStatus],
+                  ["Network",        "Arc Testnet"],
+                  ["USDC Rail",      "Circle Native"],
+                  ["EURC Rail",      "Circle Native"],
                 ].map(([k,v])=>(
                   <div key={k} style={{...s.feeRow, padding:"4px 0"}}>
                     <span style={{color:C.muted}}>{k}</span>
@@ -905,7 +1042,6 @@ export default function NomaPay() {
                   </div>
                 ))}
               </div>
-
               <div style={s.contractBox}>
                 <div style={s.contractLabel}>NomaPay Contract</div>
                 <div style={s.contractAddr}>{NOMAPAY_CONTRACT}</div>
@@ -917,9 +1053,7 @@ export default function NomaPay() {
 
       <footer style={s.footer}>
         <div>NomaPay · Built on Arc Testnet by Circle · USDC & EURC powered</div>
-        <div style={{marginTop:4, color:C.accent2}}>
-          Track 1 — Cross-Border Payments & Remittances·
-        </div>
+        <div style={{marginTop:4, color:C.accent2}}>Track 1 — Cross-Border Payments & Remittances · Circle Developer Challenge 2025</div>
         {circlePing && <div style={{marginTop:4, color:C.accent}}>● Circle API Connected</div>}
       </footer>
     </div>
