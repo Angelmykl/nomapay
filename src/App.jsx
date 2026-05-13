@@ -224,24 +224,23 @@ export default function NomaPay() {
     const provider = new ethers.JsonRpcProvider(RPC);
     const currentBlock = await provider.getBlockNumber();
     console.log("Current block:", currentBlock, "tag:", tag);
-    
     const fromBlock = Math.max(0, currentBlock - 5000);
-    
-    // Use raw getLogs instead of queryFilter
+
     const iface = new ethers.Interface([
-  "event TokenSent(string fromUsername, string toUsername, address indexed token, uint256 amount, uint256 fee)"
-]);
+      "event TokenSent(string fromUsername, string toUsername, address token, uint256 amount, uint256 fee)"
+    ]);
     const topic = iface.getEvent("TokenSent").topicHash;
-    
+
     const logs = await provider.getLogs({
       address: NOMAPAY_CONTRACT,
       topics: [topic],
       fromBlock: fromBlock,
       toBlock: "latest",
     });
-    
+
     console.log("Raw logs found:", logs.length);
-    
+    if (logs.length > 0) console.log("First log data:", logs[0].data, "topics:", logs[0].topics);
+
     const existing    = loadHistory(tag);
     const existingIds = new Set(existing.map(t => t.id));
     const newEntries  = [];
@@ -249,21 +248,27 @@ export default function NomaPay() {
     for (const log of logs.reverse()) {
       if (existingIds.has(log.transactionHash)) continue;
       try {
-        const parsed = iface.parseLog(log);
-        const from   = parsed.args[0];
-        const to     = parsed.args[1];
-        console.log("Event:", from, "->", to);
+        // Decode manually from raw log data
+        const decoded = ethers.AbiCoder.defaultAbiCoder().decode(
+          ["string", "string", "address", "uint256", "uint256"],
+          log.data
+        );
+        const from = decoded[0];
+        const to   = decoded[1];
+        console.log("Decoded:", from, "->", to);
         if (from !== tag && to !== tag) continue;
         let blockTime = Date.now();
         try { const b = await provider.getBlock(log.blockNumber); if (b) blockTime = b.timestamp * 1000; } catch(e) {}
-        const tokenSym = parsed.args[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
+        const tokenSym = decoded[2].toLowerCase() === USDC_ADDRESS.toLowerCase() ? "USDC" : "EURC";
         newEntries.push({
           id: log.transactionHash, type: from === tag ? "sent" : "received",
-          from, to, amount: (Number(parsed.args[3]) / 1e6).toFixed(2),
-          fee: (Number(parsed.args[4]) / 1e6).toFixed(4), token: tokenSym,
-          time: blockTime, hash: log.transactionHash, unread: true,
+          from, to,
+          amount: (Number(decoded[3]) / 1e6).toFixed(2),
+          fee:    (Number(decoded[4]) / 1e6).toFixed(4),
+          token: tokenSym, time: blockTime,
+          hash: log.transactionHash, unread: true,
         });
-      } catch(e) { console.log("Parse error:", e.message); continue; }
+      } catch(e) { console.log("Decode error:", e.message); continue; }
     }
 
     if (newEntries.length > 0) {
