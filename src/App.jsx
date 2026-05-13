@@ -599,9 +599,9 @@ export default function NomaPay() {
             )}
             {[
               ["Recipient",    `${sendTo}.noma`],
-              ["USDC sent",    `${aedMode ? effectiveSendAmount : (fxUsdcAmount || sendAmount)} USDC`],
+              ["USDC sent", `${aedMode ? effectiveSendAmount : (fromCurrency.code === "USDC" ? sendAmount : fxUsdcAmount)} USDC`],
               ["Fee (0.5%)",   `${sendFee} USDC`],
-              ["They receive", `${aedMode ? sendNet : fxNet} USDC`],
+              ["They receive", `${aedMode ? sendNet : (fromCurrency.code === "USDC" ? sendNet : fxNet)} USDC`],
               ["Settlement",   "< 1 second on Arc"],
               ["Rail",         "USDC on Arc (Circle)"],
             ].map(([k,v]) => (
