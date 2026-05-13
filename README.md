@@ -104,7 +104,7 @@ Built for the **Circle × Arc Stablecoins Commerce Stack Challenge — Track 1: 
 
 ## Circle Product Feedback
 
-### Why we chose these products
+### Why i chose these products
 - **USDC on Arc** was the natural choice — Arc is purpose-built for stablecoin applications with dollar-denominated fees and deterministic finality. For a remittance app, predictable costs matter enormously.
 - **EURC** gave us a second stable asset to power the built-in FX swap feature, allowing users to switch between dollar and euro denominated value.
 - **Circle API (W3S)** let us verify our integration is real and traceable — judges and users can see actual API calls in Circle's console.
