@@ -251,9 +251,10 @@ console.log("Events found:", events.length, "for tag:", tag);
         setUnreadCount(c => c + newEntries.length);
       } else if (existing.length > 0) { setTxHistory(existing); }
     } catch(err) {
-      const saved = loadHistory(tag);
-      if (saved.length > 0) setTxHistory(saved);
-    }
+  console.error("fetchOnChainHistory error:", err);
+  const saved = loadHistory(tag);
+  if (saved.length > 0) setTxHistory(saved);
+}
   };
 
   const startPolling = (addr, tag) => {
