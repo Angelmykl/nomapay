@@ -7,11 +7,7 @@ export default async function handler(req, res) {
   const CIRCLE_API_KEY = process.env.CIRCLE_API_KEY;
 
   try {
-    // First ping to confirm connectivity
-    await fetch("https://api-sandbox.circle.com/ping");
-    
-    // Then call configuration with auth
-    const response = await fetch("https://api-sandbox.circle.com/v1/configuration", {
+    const response = await fetch("https://api.circle.com/v1/w3s/wallets", {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${CIRCLE_API_KEY}`,
