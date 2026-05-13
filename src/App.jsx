@@ -452,7 +452,7 @@ export default function NomaPay() {
     atSign:{ padding:"0 12px", color:C.accent, fontSize:16, fontWeight:700, borderRight:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     nomaTag:{ padding:"0 12px", color:C.muted, fontSize:12, borderLeft:`1px solid ${C.border}`, height:46, display:"flex", alignItems:"center", flexShrink:0 },
     input:{ flex:1, background:"transparent", border:"none", outline:"none", color:C.text, fontSize:14, padding:"0 12px", height:46, fontFamily:"inherit", minWidth:0 },
-    select:{ flex:1, background:"#0b0d12", border:"none", outline:"none", color:C.text, fontSize:13, padding:"8px 12px", fontFamily:"inherit", minWidth:0, cursor:"pointer", borderRadius:8 },
+    select:{ width:"100%", background:"transparent", border:"none", outline:"none", color:C.text, fontSize:11, padding:"2px 0", fontFamily:"inherit", cursor:"pointer", maxWidth:"100%" },
     feeBox:{ display:"flex", justifyContent:"space-between", background:"rgba(0,229,160,0.04)", border:`1px solid rgba(0,229,160,0.14)`, borderRadius:8, padding:"9px 13px", marginBottom:14, fontSize:12 },
     feeAmt:{ color:C.accent, fontWeight:600 },
     statusMsg:{ fontSize:12, marginBottom:12, lineHeight:1.5 },
@@ -479,7 +479,7 @@ export default function NomaPay() {
     feeRowNet:{ color:C.accent, fontWeight:600 },
     // FX selector styles
     fxBox:{ display:"flex", alignItems:"center", gap:8, marginBottom:12 },
-    fxSide:{ flex:1, background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"10px 12px" },
+    fxSide:{ flex:"1 1 0", minWidth:0, background:"#0b0d12", border:`1px solid ${C.border}`, borderRadius:10, padding:"8px 8px", overflow:"hidden" },
     fxLabel:{ fontSize:9, color:C.muted, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:6 },
     fxCurrencyRow:{ display:"flex", alignItems:"center", gap:6, marginBottom:6 },
     fxFlag:{ fontSize:16 },
