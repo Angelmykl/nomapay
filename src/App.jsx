@@ -224,7 +224,8 @@ export default function NomaPay() {
       const provider = new ethers.JsonRpcProvider(RPC);
       const contract = new ethers.Contract(NOMAPAY_CONTRACT, CONTRACT_ABI, provider);
       const currentBlock = await provider.getBlockNumber();
-      const fromBlock    = Math.max(0, currentBlock - 50000);
+      const fromBlock    = Math.max(0, currentBlock - 5000);
+console.log("Events found:", events.length, "for tag:", tag);
       const events       = await contract.queryFilter(contract.filters.TokenSent(), fromBlock, "latest");
       const existing     = loadHistory(tag);
       const existingIds  = new Set(existing.map(t => t.id));
